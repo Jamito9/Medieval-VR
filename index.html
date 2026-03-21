@@ -2,14 +2,20 @@
 <html>
   <head>
     <meta charset="utf-8">
-    <title>Medieval DH</title>
+    <title>Arthurian DH - Controlled Inspection</title>
     <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
     <script src="https://unpkg.com/aframe-environment-component@1.3.2/dist/aframe-environment-component.min.js"></script>
     
     <script>
-      // 1. IMPROVED ROTATION COMPONENT
+      // 1. CLAMPED ROTATION COMPONENT
       AFRAME.registerComponent('drag-rotate', {
-        schema: { speed: { default: 1.5 } },
+        schema: { 
+          speed: { default: 1.5 },
+          minX: { default: -50 }, // Allow some tilt up/down
+          maxX: { default: 10 },
+          minY: { default: -30 }, // Restrict side-to-side
+          maxY: { default: 30 }
+        },
         init: function () {
           this.ifMouseDown = false;
           this.x_cord = 0;
@@ -17,8 +23,8 @@
 
           this.el.addEventListener('mousedown', e => {
             this.ifMouseDown = true;
-            this.x_cord = e.clientX || (e.detail.cursorEl ? 0 : 0);
-            this.y_cord = e.clientY || (e.detail.cursorEl ? 0 : 0);
+            this.x_cord = e.clientX;
+            this.y_cord = e.clientY;
           });
 
           window.addEventListener('mouseup', () => { this.ifMouseDown = false; });
@@ -28,8 +34,15 @@
               var temp_x = e.clientX - this.x_cord;
               var temp_y = e.clientY - this.y_cord;
               var rotation = this.el.getAttribute('rotation');
-              rotation.y += temp_x * this.data.speed * 0.1;
-              rotation.x += temp_y * this.data.speed * 0.1;
+              
+              // Apply rotation
+              var newY = rotation.y + (temp_x * this.data.speed * 0.1);
+              var newX = rotation.x + (temp_y * this.data.speed * 0.1);
+              
+              // CLAMPING: Keeps the folio from flipping over
+              rotation.y = Math.max(this.data.minY, Math.min(this.data.maxY, newY));
+              rotation.x = Math.max(this.data.minX, Math.min(this.data.maxX, newX));
+              
               this.el.setAttribute('rotation', rotation);
               this.x_cord = e.clientX;
               this.y_cord = e.clientY;
@@ -38,7 +51,7 @@
         }
       });
 
-      // 2. MAIN LOGIC COMPONENT
+      // 2. MAIN LOGIC
       AFRAME.registerComponent('scriptorium-logic', {
         init: function () {
           var folio = document.querySelector('#folio-object');
@@ -55,19 +68,21 @@
           var currentPage = 1;
           var scaleState = 0; 
 
-          // Audio Unlock
-          window.addEventListener('click', function() {
+          // Audio Unlock Logic
+          var unlock = function() {
             if (soundEl.components.sound) {
               soundEl.components.sound.playSound();
               soundUI.setAttribute('visible', 'false');
             }
-          }, { once: true });
+            window.removeEventListener('click', unlock);
+          };
+          window.addEventListener('click', unlock);
 
           // Hover Tooltips
           folio.addEventListener('mouseenter', function () { hoverTooltip.setAttribute('visible', 'true'); });
           folio.addEventListener('mouseleave', function () { hoverTooltip.setAttribute('visible', 'false'); });
 
-          // ZOOM BUTTON (GOLD)
+          // BUTTON 1: ZOOM / RESET (GOLD)
           document.querySelector('#zoom-button').addEventListener('click', function () {
             if (!zoomed) {
               folio.setAttribute('animation', {property: 'position', to: '0 1.5 -0.8', dur: 1000, easing: 'easeInOutQuad'});
@@ -86,7 +101,7 @@
             }
           });
 
-          // MATERIAL BUTTON (SILVER)
+          // BUTTON 2: MATERIAL (SILVER)
           document.querySelector('#mat-button').addEventListener('click', function () {
             materialityMode = !materialityMode;
             folio.setAttribute('material', materialityMode ? 
@@ -95,7 +110,7 @@
             this.setAttribute('color', materialityMode ? '#333' : '#C0C0C0');
           });
 
-          // SWAP PAGE BUTTON (BRONZE)
+          // BUTTON 3: SWAP (BRONZE)
           document.querySelector('#swap-button').addEventListener('click', function () {
             currentPage = (currentPage === 1) ? 2 : 1;
             var title = (currentPage === 1) ? 'Liber Chronicarum' : 'Liber Pluscardensis';
@@ -104,7 +119,7 @@
             hoverText.setAttribute('value', title);
           });
 
-          // SCALE BUTTON (BLUE)
+          // BUTTON 4: SCALE (BLUE)
           document.querySelector('#scale-button').addEventListener('click', function () {
             scaleState = (scaleState + 1) % 3;
             var scales = ['1 1 1', '1.8 1.8 1.8', '0.6 0.6 0.6'];
@@ -133,7 +148,7 @@
       </a-assets>
 
       <a-entity environment="preset: starry; lighting: none; groundColor: #050505;"></a-entity>
-      <a-entity light="type: ambient; intensity: 0.1; color: #333"></a-entity>
+      <a-entity light="type: ambient; intensity: 0.15; color: #333"></a-entity>
       <a-entity id="ambient-sound" sound="src: #chant; loop: true; volume: 0.5; autoplay: false;"></a-entity>
       <a-text id="sound-ui" value="CLICK TO ENABLE SOUND" position="0 2.2 -2" align="center" color="#FFD700" width="3"></a-text>
 
@@ -145,7 +160,7 @@
                     position="0 0.5 0.5" flicker></a-entity>
 
           <a-entity id="hover-tooltip" position="0 0.55 0.05" visible="false">
-              <a-plane width="0.75" height="0.15" color="#000" opacity="0.8"></a-plane>
+              <a-plane width="0.8" height="0.15" color="#000" opacity="0.85"></a-plane>
               <a-text id="hover-text" value="Liber Chronicarum" color="white" align="center" width="0.8" position="0 0 0.01"></a-text>
           </a-entity>
       </a-plane>
