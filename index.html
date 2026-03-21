@@ -2,40 +2,34 @@
 <html>
   <head>
     <meta charset="utf-8">
-    <title>Medieval DH - Precision Inspection</title>
+    <title>Medieval DH</title>
     <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
     <script src="https://unpkg.com/aframe-environment-component@1.3.2/dist/aframe-environment-component.min.js"></script>
     
     <script>
-      // IMPROVED: Scoped Rotation Component
+      // 1. IMPROVED ROTATION COMPONENT
       AFRAME.registerComponent('drag-rotate', {
-        schema: { speed: { default: 2 } },
+        schema: { speed: { default: 1.5 } },
         init: function () {
           this.ifMouseDown = false;
           this.x_cord = 0;
           this.y_cord = 0;
 
-          // Only trigger if the mouse/laser starts ON the folio
           this.el.addEventListener('mousedown', e => {
             this.ifMouseDown = true;
-            // Handle both mouse events and VR controller intersection points
-            this.x_cord = e.detail.cursorEl ? e.detail.intersection.point.x : e.clientX;
-            this.y_cord = e.detail.cursorEl ? e.detail.intersection.point.y : e.clientY;
+            this.x_cord = e.clientX || (e.detail.cursorEl ? 0 : 0);
+            this.y_cord = e.clientY || (e.detail.cursorEl ? 0 : 0);
           });
 
-          // Stop rotating when mouse is released anywhere
-          window.addEventListener('mouseup', () => { this.ifMouseDown = true; this.ifMouseDown = false; });
+          window.addEventListener('mouseup', () => { this.ifMouseDown = false; });
 
           window.addEventListener('mousemove', e => {
             if (this.ifMouseDown) {
               var temp_x = e.clientX - this.x_cord;
               var temp_y = e.clientY - this.y_cord;
-              
               var rotation = this.el.getAttribute('rotation');
-              // Horizontal mouse move rotates around Y axis, Vertical rotates around X
-              rotation.y += temp_x * this.data.speed * 0.15;
-              rotation.x += temp_y * this.data.speed * 0.15;
-              
+              rotation.y += temp_x * this.data.speed * 0.1;
+              rotation.x += temp_y * this.data.speed * 0.1;
               this.el.setAttribute('rotation', rotation);
               this.x_cord = e.clientX;
               this.y_cord = e.clientY;
@@ -44,16 +38,21 @@
         }
       });
 
+      // 2. MAIN LOGIC COMPONENT
       AFRAME.registerComponent('scriptorium-logic', {
         init: function () {
           var folio = document.querySelector('#folio-object');
           var info = document.querySelector('#info-panel');
           var btns = document.querySelector('#button-group');
+          var folioText = document.querySelector('#folio-text');
           var soundEl = document.querySelector('#ambient-sound');
+          var hoverTooltip = document.querySelector('#hover-tooltip');
+          var hoverText = document.querySelector('#hover-text');
           var soundUI = document.querySelector('#sound-ui');
           
           var zoomed = false;
           var materialityMode = false;
+          var currentPage = 1;
           var scaleState = 0; 
 
           // Audio Unlock
@@ -64,27 +63,30 @@
             }
           }, { once: true });
 
-          // ZOOM + RESET LOGIC
+          // Hover Tooltips
+          folio.addEventListener('mouseenter', function () { hoverTooltip.setAttribute('visible', 'true'); });
+          folio.addEventListener('mouseleave', function () { hoverTooltip.setAttribute('visible', 'false'); });
+
+          // ZOOM BUTTON (GOLD)
           document.querySelector('#zoom-button').addEventListener('click', function () {
             if (!zoomed) {
-              folio.setAttribute('animation', {property: 'position', to: '0 1.5 -0.8', dur: 800, easing: 'easeOutQuad'});
-              folio.setAttribute('animation__rot', {property: 'rotation', to: '0 0 0', dur: 800, easing: 'easeOutQuad'});
-              btns.setAttribute('animation', {property: 'position', to: '1.2 0.2 -0.6', dur: 800, easing: 'easeOutQuad'});
+              folio.setAttribute('animation', {property: 'position', to: '0 1.5 -0.8', dur: 1000, easing: 'easeInOutQuad'});
+              folio.setAttribute('animation__rot', {property: 'rotation', to: '0 0 0', dur: 1000, easing: 'easeInOutQuad'});
+              btns.setAttribute('animation', {property: 'position', to: '1.2 0.2 -0.6', dur: 1000, easing: 'easeInOutQuad'});
               info.setAttribute('visible', 'true');
               this.setAttribute('color', '#AA0000'); 
               zoomed = true;
             } else {
-              // Reset everything back to the desk-view
-              folio.setAttribute('animation', {property: 'position', to: '0 1.1 -1.5', dur: 800, easing: 'easeOutQuad'});
-              folio.setAttribute('animation__rot', {property: 'rotation', to: '-20 0 0', dur: 800, easing: 'easeOutQuad'});
-              btns.setAttribute('animation', {property: 'position', to: '0.9 0 -1.2', dur: 800, easing: 'easeOutQuad'});
+              folio.setAttribute('animation', {property: 'position', to: '0 1.1 -1.5', dur: 1000, easing: 'easeInOutQuad'});
+              folio.setAttribute('animation__rot', {property: 'rotation', to: '-20 0 0', dur: 1000, easing: 'easeInOutQuad'});
+              btns.setAttribute('animation', {property: 'position', to: '0.9 0 -1.2', dur: 1000, easing: 'easeInOutQuad'});
               info.setAttribute('visible', 'false');
               this.setAttribute('color', '#FFD700'); 
               zoomed = false;
             }
           });
 
-          // Materiality Toggle
+          // MATERIAL BUTTON (SILVER)
           document.querySelector('#mat-button').addEventListener('click', function () {
             materialityMode = !materialityMode;
             folio.setAttribute('material', materialityMode ? 
@@ -93,7 +95,16 @@
             this.setAttribute('color', materialityMode ? '#333' : '#C0C0C0');
           });
 
-          // Scale Logic
+          // SWAP PAGE BUTTON (BRONZE)
+          document.querySelector('#swap-button').addEventListener('click', function () {
+            currentPage = (currentPage === 1) ? 2 : 1;
+            var title = (currentPage === 1) ? 'Liber Chronicarum' : 'Liber Pluscardensis';
+            folio.setAttribute('src', (currentPage === 1) ? '#manuscript1' : '#manuscript2');
+            folioText.setAttribute('value', title + '\n\n- GOLD: Zoom View\n- SILVER: Surface Analysis\n- BRONZE: Toggle Page\n- BLUE: Change Scale');
+            hoverText.setAttribute('value', title);
+          });
+
+          // SCALE BUTTON (BLUE)
           document.querySelector('#scale-button').addEventListener('click', function () {
             scaleState = (scaleState + 1) % 3;
             var scales = ['1 1 1', '1.8 1.8 1.8', '0.6 0.6 0.6'];
@@ -117,6 +128,7 @@
       
       <a-assets>
         <img id="manuscript1" src="folio.jpg">
+        <img id="manuscript2" src="folio2.jpg">
         <audio id="chant" src="https://cdn.pixabay.com/audio/2022/03/10/audio_c33b76a666.mp3" preload="auto"></audio>
       </a-assets>
 
@@ -131,7 +143,17 @@
           
           <a-entity id="candle" light="type: point; color: #ffcc77; intensity: 2; distance: 5;" 
                     position="0 0.5 0.5" flicker></a-entity>
+
+          <a-entity id="hover-tooltip" position="0 0.55 0.05" visible="false">
+              <a-plane width="0.75" height="0.15" color="#000" opacity="0.8"></a-plane>
+              <a-text id="hover-text" value="Liber Chronicarum" color="white" align="center" width="0.8" position="0 0 0.01"></a-text>
+          </a-entity>
       </a-plane>
+
+      <a-entity id="info-panel" position="-1.2 1.3 -0.7" visible="false">
+          <a-plane width="0.9" height="0.6" color="#111" opacity="0.95"></a-plane>
+          <a-text id="folio-text" value="Liber Chronicarum\n\n- GOLD: Zoom View\n- SILVER: Surface Analysis\n- BRONZE: Toggle Page\n- BLUE: Change Scale" color="white" align="center" width="0.7" position="0 0 0.02"></a-text>
+      </a-entity>
 
       <a-entity id="button-group" position="0.9 0 -1.2">
           <a-sphere id="zoom-button" class="clickable" position="0 1.15 0" radius="0.04" color="#FFD700">
@@ -140,7 +162,10 @@
           <a-sphere id="mat-button" class="clickable" position="0 1.05 0" radius="0.04" color="#C0C0C0">
             <a-text value="MATERIAL" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
           </a-sphere>
-          <a-sphere id="scale-button" class="clickable" position="0 0.95 0" radius="0.04" color="#4CC3D9">
+          <a-sphere id="swap-button" class="clickable" position="0 0.95 0" radius="0.04" color="#cd7f32">
+            <a-text value="SWAP PAGE" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
+          </a-sphere>
+          <a-sphere id="scale-button" class="clickable" position="0 0.85 0" radius="0.04" color="#4CC3D9">
             <a-text value="SCALE" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
           </a-sphere>
       </a-entity>
