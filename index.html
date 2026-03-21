@@ -126,13 +126,13 @@
       <a-assets>
         <img id="manuscript1" src="folio.jpg">
         <img id="manuscript2" src="folio2.jpg">
-        <audio id="chant" src="https://cdn.pixabay.com/audio/2022/03/10/audio_c33b76a666.mp3" preload="auto"></audio>
+        <audio id="music-track" src="chant.mp3" preload="auto"></audio>
       </a-assets>
 
       <a-entity environment="preset: starry; lighting: none;"></a-entity>
       <a-entity light="type: ambient; intensity: 0.2; color: #fff"></a-entity>
 
-      <a-entity id="ambient-sound" sound="src: #chant; loop: true; volume: 0.5;"></a-entity>
+      <a-entity id="ambient-sound" sound="src: #music-track; loop: true; volume: 0.5;"></a-entity>
       <a-text id="sound-ui" value="CLICK TO START MUSIC" position="0 2.2 -2" align="center" color="#FFD700" width="3"></a-text>
 
       <a-plane id="folio-object" class="clickable" drag-rotate src="#manuscript1" 
