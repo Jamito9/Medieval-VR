@@ -2,121 +2,112 @@
 <html>
   <head>
     <meta charset="utf-8">
-    <title>Medieval Scriptorium - Fully Fixed Build</title>
+    <title>Medieval Scriptorium - Final Stable Build</title>
     <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
     <script src="https://unpkg.com/aframe-environment-component@1.3.2/dist/aframe-environment-component.min.js"></script>
 
     <script>
-      // 1. EXACT STABLE ROTATION COMPONENT FROM YOUR WORKING CODE
+      // 1. STABLE ROTATION COMPONENT (Your Original Math)
       AFRAME.registerComponent('drag-rotate', {
         init: function () {
           this.ifMouseDown = false;
-          this.x_cord = 0;
-          this.y_cord = 0;
-
-          // Only start if clicking the folio itself
+          this.x_cord = 0; this.y_cord = 0;
           this.el.addEventListener('mousedown', (e) => {
             this.ifMouseDown = true;
-            // THIS WAS THE MISSING MAGIC: Prevents the NaN "poof" bug with gaze cursors
             this.x_cord = e.detail.cursorEl ? 0 : e.clientX;
             this.y_cord = e.detail.cursorEl ? 0 : e.clientY;
           });
-
           window.addEventListener('mouseup', () => { this.ifMouseDown = false; });
-
           window.addEventListener('mousemove', (e) => {
             if (this.ifMouseDown) {
               var rotation = this.el.getAttribute('rotation');
-              
-              // Calculate movement
               var deltaX = (e.clientX - this.x_cord) * 0.1;
               var deltaY = (e.clientY - this.y_cord) * 0.1;
-
-              // Apply and Clamp (Max 30 degrees from origin)
               var nextY = rotation.y + deltaX;
               var nextX = rotation.x + deltaY;
-
               rotation.y = Math.max(-30, Math.min(30, nextY));
               rotation.x = Math.max(-60, Math.min(10, nextX));
-
               this.el.setAttribute('rotation', rotation);
-              this.x_cord = e.clientX;
-              this.y_cord = e.clientY;
+              this.x_cord = e.clientX; this.y_cord = e.clientY;
             }
           });
         }
       });
 
-      // 2. STABLE APP LOGIC
+      // 2. LIGHT FLICKER
+      AFRAME.registerComponent('flicker', {
+        tick: function () {
+          if (Math.random() > 0.8) {
+            this.el.setAttribute('light', 'intensity', 1.0 + (Math.random() * 1.0));
+          }
+        }
+      });
+
+      // 3. APP LOGIC
       AFRAME.registerComponent('scriptorium-logic', {
         init: function () {
           const folio = document.querySelector('#folio-object');
           const soundEl = document.querySelector('#ambient-sound');
-          
-          const infoText = document.querySelector('#info-text');
+          const hoverTooltip = document.querySelector('#hover-tooltip');
           const transcrText = document.querySelector('#transcr-text');
           const translText = document.querySelector('#transl-text');
-          
           const muteBtn = document.querySelector('#mute-button');
           const muteLabel = document.querySelector('#mute-label');
          
-          let zoomed = false;
-          let materialityMode = false;
-          let currentPage = 1; 
-          let scaleState = 0; 
-          let isMuted = false;
+          let zoomed = false; let materialityMode = false;
+          let currentPage = 1; let scaleState = 0; let isMuted = false;
 
-          // FULL TEXT RESTORED
-          const lat1 = "De Scocia\n\nScocia est insule in quo est anglia suprema portio et in aquilone versa. Flumibus haud magnis et monte quodam ab anglia discreta. Hic nos brunali tempore fuimus cum sol paulo amplius quam tris horis terram illusiaret. Jacobus eo tempore regnabat quadratus et multo abdomine grauis. qui cum olim in anglia captus . xi . annis in custodia fuisset. ac dimissus tandem suscepta ex anglica coniuge domum reuersus plures regulos gladio percussisset. et ipse tandem a suis domesticis interfectus est. Inter quos vltione pacata filius eius regnum suscepit. Audiueramus nos olim arborem esse in scocia quae supra ripas fluminis enata fructus produceret anetarum formam habentes... Id genus lapidis siue sulphurea siue alia pingues materia praeditum pro ligno quo regio nuda est comburitur.";
-          const eng1 = "Concerning Scotland\n\nScotland is of the island in which England is the upper part, and it lies toward the north. It is separated from England by rivers not large and by a certain mountain. We were here in the winter season, when the sun shone upon the earth for a little more than three hours. [King] James [IV] reigned at that time, square-built and burdened with a very large belly. He, having once been captured in England and kept in custody for eleven years, and at last released, after taking an English wife, returned home and struck down several petty rulers with the sword. And he himself was at last killed by his own household... This kind of stone, endowed with a sulphurous or other rich material, is burned in place of wood, of which the region is bare.";
+          const lat1 = "De Scocia\n\nScocia est insule in quo est anglia suprema portion...";
+          const eng1 = "Concerning Scotland\n\nScotland is of the island in which England is the upper part...";
+          const lat2 = "Quorum cateruis sic gloriose circumuallatus...";
+          const eng2 = "Surrounded so gloriously by his companies...";
 
-          const lat2 = "Quorum cateruis sic gloriose circumuallatus... Cui rex robertus cum paucis respectu multitudinis eius in domino confidens... cum dicto rege anglie mortale commisit bellum ac ipsum cum omni pompa sua et innumerabili potencia auxiliante altissimo cuius est victoriam dare... ubi comes glouernie et multi nobiles anglie ceciderunt interfecti… alii fugati . alii capti . alii occisi… per captiuos enim non solum regina scocie cum suis liberati sunt... Ac eciam omnes alii in dicto bello existentes inestimabiliter sunt ditati.";
-          const eng2 = "Surrounded so gloriously by his companies... he came as far as the place called Bannockburn and pitched his tents there. Against him King Robert, with only a few men... trusting in the Lord and taking strength in God... joined mortal battle with the said king of England. And him, with all his pomp and his innumerable power, the Most High assisting... he turned to flight. There the Earl of Gloucester and many nobles of England fell slain…. Others were put to flight; others were captured; others were killed… Likewise, in exchange for him, the bishop of Glasgow, a venerable man of great age, who had similarly been held in prison by the tyrant, was freed at London [.]";
-
-          // INITIALIZE TEXT
+          // INITIAL TEXT
           transcrText.setAttribute('value', lat1);
           translText.setAttribute('value', eng1);
-          infoText.setAttribute('value', 'Liber Chronicarum\n1493\nHartmann Schedel');
 
-          // BUTTON LOGIC
+          // HOVER LOGIC
+          folio.addEventListener('mouseenter', () => hoverTooltip.setAttribute('visible', 'true'));
+          folio.addEventListener('mouseleave', () => hoverTooltip.setAttribute('visible', 'false'));
+
+          // ZOOM/RESET BUTTON
+          document.querySelector('#zoom-button').addEventListener('click', () => {
+            zoomed = !zoomed;
+            folio.setAttribute('animation', {property: 'position', to: zoomed ? '0 1.5 -0.8' : '0 1.1 -1.4', dur: 800});
+            folio.setAttribute('animation__rot', {property: 'rotation', to: zoomed ? '0 0 0' : '-20 0 0', dur: 800});
+          });
+
+          // SCALE BUTTON
           document.querySelector('#scale-button').addEventListener('click', () => {
             scaleState = (scaleState + 1) % 3;
             const scales = ['1 1 1', '1.4 1.4 1.4', '0.7 0.7 0.7'];
-            folio.setAttribute('animation', {property: 'scale', to: scales[scaleState], dur: 400});
+            folio.setAttribute('scale', scales[scaleState]);
           });
 
+          // SWAP BUTTON
           document.querySelector('#swap-button').addEventListener('click', () => {
             currentPage = (currentPage === 1) ? 2 : 1;
             folio.setAttribute('src', currentPage === 1 ? '#manuscript1' : '#manuscript2');
-            infoText.setAttribute('value', currentPage === 1 ? 'Liber Chronicarum\n1493\nHartmann Schedel' : 'Liber Pluscardensis\nBefore 1500');
+            document.querySelector('#hover-text').setAttribute('value', currentPage === 1 ? 'Liber Chronicarum' : 'Liber Pluscardensis');
             transcrText.setAttribute('value', currentPage === 1 ? lat1 : lat2);
             translText.setAttribute('value', currentPage === 1 ? eng1 : eng2);
           });
 
-          document.querySelector('#mat-button').addEventListener('click', () => {
-            materialityMode = !materialityMode;
-            folio.setAttribute('material', 'metalness', materialityMode ? 0.9 : 0.1);
-            folio.setAttribute('material', 'roughness', materialityMode ? 0.1 : 0.8);
-          });
-
-          document.querySelector('#mute-button').addEventListener('click', () => {
+          // MUTE BUTTON
+          muteBtn.addEventListener('click', () => {
             isMuted = !isMuted;
             if (isMuted) { 
-                soundEl.components.sound.pauseSound(); 
-                muteLabel.setAttribute('value', 'UNMUTE');
-                muteBtn.setAttribute('color', '#8B0000'); // Dark Red
+              soundEl.components.sound.pauseSound(); 
+              muteBtn.setAttribute('color', '#8B0000'); 
+              muteLabel.setAttribute('value', 'UNMUTE');
             } else { 
-                soundEl.components.sound.playSound(); 
-                muteLabel.setAttribute('value', 'MUTE');
-                muteBtn.setAttribute('color', '#FF4500'); // Orange-Red
+              soundEl.components.sound.playSound(); 
+              muteBtn.setAttribute('color', '#FF4500'); 
+              muteLabel.setAttribute('value', 'MUTE');
             }
           });
 
-          // AUDIO UNLOCK
-          window.addEventListener('click', () => {
-            if (soundEl.components.sound) soundEl.components.sound.playSound();
-            document.querySelector('#sound-ui').setAttribute('visible', 'false');
-          }, { once: true });
+          window.addEventListener('click', () => { if (soundEl.components.sound) soundEl.components.sound.playSound(); document.querySelector('#sound-ui').setAttribute('visible', 'false'); }, { once: true });
         }
       });
     </script>
@@ -131,43 +122,41 @@
       </a-assets>
 
       <a-entity environment="preset: starry; lighting: none;"></a-entity>
-      <a-entity light="type: ambient; intensity: 0.4; color: #fff"></a-entity>
+      <a-entity light="type: ambient; intensity: 0.3;"></a-entity>
       <a-entity id="ambient-sound" sound="src: #music-track; loop: true; volume: 0.5;"></a-entity>
-      <a-text id="sound-ui" value="CLICK TO START MUSIC" position="0 2.2 -2" align="center" color="#FFD700" width="3"></a-text>
+      <a-text id="sound-ui" value="CLICK TO START" position="0 2.2 -2" align="center" color="#FFD700" width="3"></a-text>
 
       <a-plane id="folio-object" class="clickable" drag-rotate src="#manuscript1"
                position="0 1.1 -1.4" rotation="-20 0 0" width="1.1" height="0.8"
                material="shader: standard; metalness: 0.1; roughness: 0.8; side: double;">
-          <a-entity id="candle" light="type: point; color: #ffcc77; intensity: 1.5; distance: 4;" position="0 0.5 0.5"></a-entity>
+          
+          <a-entity id="candle" light="type: point; color: #ffcc77; intensity: 1.5; distance: 4;" position="0 0.5 0.5" flicker></a-entity>
+
+          <a-entity id="hover-tooltip" position="0 0.55 0.05" visible="false">
+              <a-plane width="0.8" height="0.15" color="black" opacity="0.8"></a-plane>
+              <a-text id="hover-text" value="Liber Chronicarum" color="white" align="center" width="0.8" position="0 0 0.01"></a-text>
+          </a-entity>
       </a-plane>
 
-      <a-entity id="button-group" position="0.8 1.1 -1.2" rotation="0 -25 0">
-          <a-sphere id="scale-button" class="clickable" position="0 0.25 0" radius="0.04" color="#4CC3D9" material="metalness: 0.5; roughness: 0.5;">
-            <a-text value="SCALE" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
-          </a-sphere>
-          <a-sphere id="mat-button" class="clickable" position="0 0.12 0" radius="0.04" color="#C0C0C0" material="metalness: 0.5; roughness: 0.5;">
-            <a-text value="MATERIAL" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
-          </a-sphere>
-          <a-sphere id="swap-button" class="clickable" position="0 0 0" radius="0.04" color="#cd7f32" material="metalness: 0.5; roughness: 0.5;">
-            <a-text value="SWAP PAGE" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
-          </a-sphere>
-          <a-box id="mute-button" class="clickable" position="0 -0.15 0" width="0.07" height="0.07" depth="0.07" color="#FF4500" material="metalness: 0.3; roughness: 0.7;">
-            <a-text id="mute-label" value="MUTE" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
-          </a-box>
+      <a-entity id="button-group" position="0.9 1.1 -1.2" rotation="0 -25 0">
+          <a-sphere id="zoom-button" class="clickable" position="0 0.25 0" radius="0.04" color="#FFD700"><a-text value="ZOOM/RESET" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text></a-sphere>
+          <a-sphere id="scale-button" class="clickable" position="0 0.12 0" radius="0.04" color="#4CC3D9"><a-text value="SCALE" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text></a-sphere>
+          <a-sphere id="swap-button" class="clickable" position="0 0 0" radius="0.04" color="#cd7f32"><a-text value="SWAP PAGE" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text></a-sphere>
+          <a-box id="mute-button" class="clickable" position="0 -0.15 0" width="0.07" height="0.07" depth="0.07" color="#FF4500"><a-text id="mute-label" value="MUTE" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text></a-box>
       </a-entity>
 
-      <a-entity id="info-panel" position="-0.75 1.1 -1.2" rotation="0 25 0">
+      <a-entity id="info-panel" position="-0.9 1.1 -1.1" rotation="0 35 0">
           <a-plane width="0.5" height="0.4" color="#111" opacity="0.9"></a-plane>
-          <a-text id="info-text" color="#FFD700" align="center" width="0.6" position="0 0 0.02"></a-text>
+          <a-text id="info-text" value="1493 Edition\nHartmann Schedel" color="#FFD700" align="center" width="0.6" position="0 0 0.02"></a-text>
       </a-entity>
 
-      <a-entity id="translation-panel" position="-1.5 1.1 -0.9" rotation="0 60 0">
+      <a-entity id="translation-panel" position="-1.6 1.1 -0.7" rotation="0 70 0">
           <a-plane width="0.9" height="1.8" color="#111" opacity="0.9"></a-plane>
           <a-text value="ENGLISH TRANSLATION" color="#FFD700" align="center" width="0.9" position="0 0.8 0.02"></a-text>
           <a-text id="transl-text" color="white" align="left" width="0.8" position="-0.4 0 0.02" wrap-count="28"></a-text>
       </a-entity>
 
-      <a-entity id="transcription-panel" position="-1.8 1.1 -0.3" rotation="0 105 0">
+      <a-entity id="transcription-panel" position="-1.9 1.1 0.1" rotation="0 115 0">
           <a-plane width="0.9" height="1.8" color="#111" opacity="0.9"></a-plane>
           <a-text value="LATIN TRANSCRIPTION" color="#FFD700" align="center" width="0.9" position="0 0.8 0.02"></a-text>
           <a-text id="transcr-text" color="white" align="left" width="0.8" position="-0.4 0 0.02" wrap-count="28"></a-text>
