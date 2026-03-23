@@ -1,357 +1,94 @@
-<!DOCTYPE html>
-
-<html>
-
-  <head>
-
-    <meta charset="utf-8">
-
-    <title>Medieval - DH Project</title>
-
-    <script src=https://aframe.io/releases/1.4.0/aframe.min.js></script>
-
-    <script src=https://unpkg.com/aframe-environment-component@1.3.2/dist/aframe-environment-component.min.js></script>
-
-   
-
-    <script>
-
-      // 1. STABLE ROTATION COMPONENT
-
-      AFRAME.registerComponent('drag-rotate', {
-
-        init: function () {
-
-          this.ifMouseDown = false;
-
-          this.x_cord = 0;
-
-          this.y_cord = 0;
-
- 
-
-          // Only start if clicking the folio itself
-
-          this.el.addEventListener('mousedown', (e) => {
-
-            this.ifMouseDown = true;
-
-            this.x_cord = e.detail.cursorEl ? 0 : e.clientX;
-
-            this.y_cord = e.detail.cursorEl ? 0 : e.clientY;
-
-          });
-
- 
-
-          window.addEventListener('mouseup', () => { this.ifMouseDown = false; });
-
- 
-
-          window.addEventListener('mousemove', (e) => {
-
-            if (this.ifMouseDown) {
-
-              var rotation = this.el.getAttribute('rotation');
-
-             
-
-              // Calculate movement
-
-              var deltaX = (e.clientX - this.x_cord) * 0.1;
-
-              var deltaY = (e.clientY - this.y_cord) * 0.1;
-
- 
-
-              // Apply and Clamp (Max 30 degrees from origin)
-
-              var nextY = rotation.y + deltaX;
-
-              var nextX = rotation.x + deltaY;
-
- 
-
-              rotation.y = Math.max(-30, Math.min(30, nextY));
-
-              rotation.x = Math.max(-60, Math.min(10, nextX));
-
- 
-
-              this.el.setAttribute('rotation', rotation);
-
-              this.x_cord = e.clientX;
-
-              this.y_cord = e.clientY;
-
-            }
-
-          });
-
-        }
-
-      });
-
- 
-
-      // 2. STABLE APP LOGIC
-
-      AFRAME.registerComponent('scriptorium-logic', {
-
-        init: function () {
-
-          const folio = document.querySelector('#folio-object');
-
-          const info = document.querySelector('#info-panel');
-
-          const btns = document.querySelector('#button-group');
-
-          const soundEl = document.querySelector('#ambient-sound');
-
-          const hoverTooltip = document.querySelector('#hover-tooltip');
-
-         
-
-          let zoomed = false;
-
-          let materialityMode = false;
-
-          let currentPage = 1;
-
-          let scaleState = 0;
-
- 
-
-          // Audio Unlock
-
-          window.addEventListener('click', () => {
-
-            if (soundEl.components.sound) soundEl.components.sound.playSound();
-
-            document.querySelector('#sound-ui').setAttribute('visible', 'false');
-
-          }, { once: true });
-
- 
-
-          // Hover Titles
-
-          folio.addEventListener('mouseenter', () => hoverTooltip.setAttribute('visible', 'true'));
-
-          folio.addEventListener('mouseleave', () => hoverTooltip.setAttribute('visible', 'false'));
-
- 
-
-          // GOLD BUTTON: ZOOM / RESET
-
-          document.querySelector('#zoom-button').addEventListener('click', () => {
-
-            if (!zoomed) {
-
-              folio.setAttribute('animation', {property: 'position', to: '0 1.5 -0.8', dur: 800});
-
-              folio.setAttribute('animation__rot', {property: 'rotation', to: '0 0 0', dur: 800});
-
-              btns.setAttribute('animation', {property: 'position', to: '1.2 0.2 -0.6', dur: 800});
-
-              info.setAttribute('visible', 'true');
-
-              zoomed = true;
-
-            } else {
-
-              folio.setAttribute('animation', {property: 'position', to: '0 1.1 -1.5', dur: 800});
-
-              folio.setAttribute('animation__rot', {property: 'rotation', to: '-20 0 0', dur: 800});
-
-              btns.setAttribute('animation', {property: 'position', to: '0.9 0 -1.2', dur: 800});
-
-              info.setAttribute('visible', 'false');
-
-              zoomed = false;
-
-            }
-
-          });
-
- 
-
-          // SILVER BUTTON: MATERIAL
-
-          document.querySelector('#mat-button').addEventListener('click', () => {
-
-            materialityMode = !materialityMode;
-
-            folio.setAttribute('material', 'metalness', materialityMode ? 0.9 : 0.1);
-
-            folio.setAttribute('material', 'roughness', materialityMode ? 0.1 : 0.8);
-
-          });
-
- 
-
-          // BRONZE BUTTON: SWAP
-
-          document.querySelector('#swap-button').addEventListener('click', () => {
-
-            currentPage = (currentPage === 1) ? 2 : 1;
-
-            folio.setAttribute('src', (currentPage === 1) ? '#manuscript1' : '#manuscript2');
-
-            document.querySelector('#hover-text').setAttribute('value', (currentPage === 1) ? 'Liber Chronicarum' : 'Liber Pluscardensis');
-
-          });
-
- 
-
-          // BLUE BUTTON: SCALE
-
-          document.querySelector('#scale-button').addEventListener('click', () => {
-
-            scaleState = (scaleState + 1) % 3;
-
-            const scales = ['1 1 1', '1.6 1.6 1.6', '0.6 0.6 0.6'];
-
-            folio.setAttribute('scale', scales[scaleState]);
-
-          });
-
-        }
-
-      });
-
- 
-
-      AFRAME.registerComponent('flicker', {
-
-        tick: function () {
-
-          if (Math.random() > 0.8) {
-
-            this.el.setAttribute('light', 'intensity', 1.5 + (Math.random() * 1.0));
-
-          }
-
-        }
-
-      });
-
-    </script>
-
-  </head>
-
- 
-
-  <body>
-
-    <a-scene scriptorium-logic renderer="antialias: true; colorManagement: true;">
-
-     
-
-      <a-assets>
-
-        <img id="manuscript1" src="folio.jpg">
-
-        <img id="manuscript2" src="folio2.jpg">
-
-        <audio id="music-track" src="chant.mp3" preload="auto"></audio>
-
-      </a-assets>
-
- 
-
-      <a-entity environment="preset: starry; lighting: none;"></a-entity>
-
-      <a-entity light="type: ambient; intensity: 0.2; color: #fff"></a-entity>
-
- 
-
-      <a-entity id="ambient-sound" sound="src: #music-track; loop: true; volume: 0.5;"></a-entity>
-
-      <a-text id="sound-ui" value="CLICK TO START MUSIC" position="0 2.2 -2" align="center" color="#FFD700" width="3"></a-text>
-
- 
-
-      <a-plane id="folio-object" class="clickable" drag-rotate src="#manuscript1"
-
-               position="0 1.1 -1.5" rotation="-20 0 0" width="1.2" height="0.85"
-
-               material="shader: standard; metalness: 0.1; roughness: 0.8;">
-
-         
-
-          <a-entity id="candle" light="type: point; color: #ffcc77; intensity: 2; distance: 5;" position="0 0.5 0.5" flicker></a-entity>
-
- 
-
-          <a-entity id="hover-tooltip" position="0 0.55 0.05" visible="false">
-
-              <a-plane width="0.8" height="0.15" color="black" opacity="0.8"></a-plane>
-
-              <a-text id="hover-text" value="Liber Chronicarum" color="white" align="center" width="0.8" position="0 0 0.01"></a-text>
-
-          </a-entity>
-
-      </a-plane>
-
- 
-
-      <a-entity id="info-panel" position="-1.2 1.3 -0.7" visible="false">
-
-          <a-plane width="0.9" height="0.6" color="#111" opacity="0.9"></a-plane>
-
-          <a-text value="MANUSCRIPT DATA\n\nUse buttons to explore.\nClick & Drag folio to tilt." color="white" align="center" width="0.7" position="0 0 0.02"></a-text>
-
-      </a-entity>
-
- 
-
-      <a-entity id="button-group" position="0.9 0 -1.2">
-
-          <a-sphere id="zoom-button" class="clickable" position="0 1.15 0" radius="0.04" color="#FFD700">
-
-            <a-text value="ZOOM/RESET" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
-
-          </a-sphere>
-
-          <a-sphere id="mat-button" class="clickable" position="0 1.05 0" radius="0.04" color="#C0C0C0">
-
-            <a-text value="MATERIAL" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
-
-          </a-sphere>
-
-          <a-sphere id="swap-button" class="clickable" position="0 0.95 0" radius="0.04" color="#cd7f32">
-
-            <a-text value="SWAP PAGE" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
-
-          </a-sphere>
-
-          <a-sphere id="scale-button" class="clickable" position="0 0.85 0" radius="0.04" color="#4CC3D9">
-
-            <a-text value="SCALE" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
-
-          </a-sphere>
-
-      </a-entity>
-
- 
-
-      <a-entity camera look-controls wasd-controls position="0 1.6 0">
-
-        <a-cursor id="cursor" raycaster="objects: .clickable" color="#FFD700" fuse="true" fuse-timeout="1500"
-
-                  animation__fusing="property: scale; startEvents: fusing; from: 1 1 1; to: 0.1 0.1 0.1; dur: 1500"
-
-                  animation__mouseleave="property: scale; startEvents: mouseleave; to: 1 1 1; dur: 100">
-
-        </a-cursor>
-
-      </a-entity>
-
- 
-
-    </a-scene>
-
-  </body>
-
+tor('#page-corner')
+      .addEventListener('grab-end', swapPage);
+
+    // SCALE
+    document.querySelector('#scale-button').addEventListener('click', () => {
+      let s = folio.getAttribute('scale');
+      let nextScale = s.x > 1.3 ? "0.7 0.7 0.7" : (s.x < 0.8 ? "1 1 1" : "1.5 1.5 1.5");
+      folio.setAttribute('scale', nextScale);
+    });
+
+    // AUDIO
+    muteBtn.addEventListener('click', () => {
+      isMuted = !isMuted;
+      isMuted ? soundEl.components.sound.pauseSound()
+              : soundEl.components.sound.playSound();
+    });
+
+    window.addEventListener('click', () => {
+      if (soundEl.components.sound) soundEl.components.sound.playSound();
+      document.querySelector('#sound-ui').setAttribute('visible', 'false');
+    }, { once: true });
+  }
+});
+
+</script>
+</head>
+
+<body>
+
+<a-scene vr-mode-detect scriptorium-logic>
+
+<a-assets>
+<img id="manuscript1" src="folio.jpg">
+<img id="manuscript2" src="folio2.jpg">
+<audio id="music-track" src="chant.mp3"></audio>
+</a-assets>
+
+<a-entity environment="preset: starry; lighting: none;"></a-entity>
+<a-entity light="type: ambient; intensity: 0.4;"></a-entity>
+
+<a-entity id="ambient-sound" sound="src: #music-track; loop: true; volume: 0.5;"></a-entity>
+<a-text id="sound-ui" value="CLICK TO START" position="0 2.2 -2" align="center"></a-text>
+
+<a-entity id="zoom-anchor" position="0 1.1 -1.4">
+
+<a-plane id="folio-object" class="clickable grabbable"
+drag-rotate clamp-vr-rotation
+src="#manuscript1"
+width="1.1" height="0.8"
+material="side: double">
+
+<a-plane id="page-corner"
+class="grabbable"
+position="0.5 -0.35 0.01"
+width="0.2" height="0.2"
+opacity="0"></a-plane>
+
+</a-plane>
+</a-entity>
+
+<a-entity id="button-group" position="0.9 1.1 -1.2">
+<a-sphere id="zoom-button" class="clickable" radius="0.05"></a-sphere>
+<a-sphere id="mat-button" class="clickable" position="0 -0.12 0" radius="0.05"></a-sphere>
+<a-sphere id="swap-button" class="clickable" position="0 -0.24 0" radius="0.05"></a-sphere>
+<a-sphere id="scale-button" class="clickable" position="0 -0.36 0" radius="0.05"></a-sphere>
+<a-box id="mute-button" class="clickable" position="0 -0.48 0"></a-box>
+</a-entity>
+
+<a-entity position="-1 1.1 -1.2">
+<a-plane width="0.5" height="0.4"></a-plane>
+<a-text id="info-text" value="Liber Chronicarum, 1493, Hartmann Schedel"></a-text>
+</a-entity>
+
+<a-entity position="-2 1.1 0.5">
+<a-plane width="0.9" height="1.8"></a-plane>
+<a-text id="transcr-text" width="0.8" wrap-count="28"></a-text>
+</a-entity>
+
+<a-entity position="-1.9 1.1 -0.5">
+<a-plane width="0.9" height="1.8"></a-plane>
+<a-text id="transl-text" width="0.8" wrap-count="28"></a-text>
+</a-entity>
+
+<a-entity hand-controls="left" super-hands></a-entity>
+<a-entity hand-controls="right" super-hands></a-entity>
+
+<a-entity camera look-controls position="0 1.6 0">
+<a-cursor raycaster="objects: .clickable"></a-cursor>
+</a-entity>
+
+</a-scene>
+
+</body>
 </html>
