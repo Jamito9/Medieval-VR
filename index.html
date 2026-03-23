@@ -1,246 +1,170 @@
 <!DOCTYPE html><html>
 <head>
-  <meta charset="utf-8">
-  <title>Medieval Scriptorium</title> <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script> <script src="https://unpkg.com/aframe-environment-component@1.3.2/dist/aframe-environment-component.min.js"></script> <script src="https://unpkg.com/super-hands@4.0.2/dist/super-hands.min.js"></script> <script>
+<meta charset="utf-8">
+<title>Medieval Scriptorium (Fixed)</title><script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script><script src="https://unpkg.com/aframe-environment-component@1.3.2/dist/aframe-environment-component.min.js"></script><script src="https://unpkg.com/super-hands@4.0.2/dist/super-hands.min.js"></script><script>
 
-  const MANUSCRIPTS = [
-    {
-      title: "Liber Chronicarum, 1493, Hartmann Schedel",
-      img: "#manuscript1",
-      lat: `De Scocia
+// STEP 1: SAFE ROTATION (MOUSE + VR CLAMP)
+AFRAME.registerComponent('drag-rotate', {
+  init: function () {
+    this.dragging = false;
+    this.prev = {x:0,y:0};
 
-Scocia est insule in quo est anglia suprema portio et in aquilone versa. Flumibus haud magnis et monte quodam ab anglia discreta. Hic nos brunali tempore fuimus cum sol paulo amplius quam tris horis terram illusiaret. Jacobus eo tempore regnabat quadratus et multo abdomine grauis. qui cum olim in anglia captus . xi . annis in custodia fuisset. ac dimissus tandem suscepta ex anglica coniuge domum reuersus plures regulos gladio percussisset. et ipse tandem a suis domesticis interfectus est. Inter quos vltione pacata filius eius regnum suscepit. Audiueramus nos olim arborem esse in scocia quae supra ripas fluminis enata fructus produceret anetarum formam habentes... Id genus lapidis siue sulphurea siue alia pingues materia praeditum pro ligno quo regio nuda est comburitur.`,
-      eng: `Concerning Scotland
+    this.el.addEventListener('mousedown', (e)=>{
+      if (this.el.sceneEl.is('vr-mode')) return;
+      this.dragging = true;
+      this.prev.x = e.clientX;
+      this.prev.y = e.clientY;
+    });
 
-Scotland is of the island in which England is the upper part, and it lies toward the north. It is separated from England by rivers not large and by a certain mountain. We were here in the winter season, when the sun shone upon the earth for a little more than three hours. James reigned at that time, square-built and burdened with a very large belly. He, having once been captured in England and kept in custody for eleven years, and at last released, after taking an English wife, returned home and struck down several petty rulers with the sword. And he himself was at last killed by his own household... This kind of stone, endowed with a sulphurous or other rich material, is burned in place of wood, of which the region is bare.`
-    },
-    {
-      title: "Liber Pluscardensis, before 1500",
-      img: "#manuscript2",
-      lat: `Quorum cateruis sic gloriose circumuallatus... Cui rex robertus cum paucis respectu multitudinis eius in domino confidens... cum dicto rege anglie mortale commisit bellum ac ipsum cum omni pompa sua et innumerabili potencia auxiliante altissimo cuius est victoriam dare... ubi comes glouernie et multi nobiles anglie ceciderunt interfecti… alii fugati . alii capti . alii occisi… per captiuos enim non solum regina scocie cum suis liberati sunt... Ac eciam omnes alii in dicto bello existentes inestimabiliter sunt ditati.`,
-      eng: `Surrounded so gloriously by his companies... he came as far as the place called Bannockburn and pitched his tents there. Against him King Robert, with only a few men... trusting in the Lord and taking strength in God... joined mortal battle with the said king of England. And him, with all his pomp and his innumerable power, the Most High assisting... he turned to flight. There the Earl of Gloucester and many nobles of England fell slain…. Others were put to flight; others were captured; others were killed.`
-    }
-  ];
+    window.addEventListener('mouseup', ()=> this.dragging = false);
 
-  // -----------------------------
-  // VR MODE DETECTION
-  // -----------------------------
-  AFRAME.registerComponent('vr-mode-toggle', {
-    init: function () {
-      this.el.sceneEl.addEventListener('enter-vr', () => this.el.sceneEl.addState('vr-mode'));
-      this.el.sceneEl.addEventListener('exit-vr', () => this.el.sceneEl.removeState('vr-mode'));
-    }
-  });
+    window.addEventListener('mousemove', (e)=>{
+      if (!this.dragging || this.el.sceneEl.is('vr-mode')) return;
 
-  // -----------------------------
-  // DRAG ROTATE (DISABLED IN VR)
-  // -----------------------------
-  AFRAME.registerComponent('drag-rotate', {
-    schema: { maxRotation: { default: 30 } },
-    init: function () {
-      this.dragging = false;
-      this.prev = { x: 0, y: 0 };
+      const dx = (e.clientX - this.prev.x)*0.2;
+      const dy = (e.clientY - this.prev.y)*0.2;
 
-      this.onMouseDown = (e) => {
-        if (this.el.sceneEl.is('vr-mode')) return;
-        this.dragging = true;
-        this.prev.x = e.clientX;
-        this.prev.y = e.clientY;
-      };
-
-      this.onMouseUp = () => this.dragging = false;
-
-      this.onMouseMove = (e) => {
-        if (!this.dragging || this.el.sceneEl.is('vr-mode')) return;
-
-        const dx = (e.clientX - this.prev.x) * 0.2;
-        const dy = (e.clientY - this.prev.y) * 0.2;
-
-        let rot = this.el.getAttribute('rotation');
-
-        let nextX = rot.x + dy;
-        let nextY = rot.y + dx;
-
-        const max = this.data.maxRotation;
-        nextX = Math.max(-max, Math.min(max, nextX));
-        nextY = Math.max(-max, Math.min(max, nextY));
-
-        this.el.setAttribute('rotation', { x: nextX, y: nextY, z: 0 });
-
-        this.prev.x = e.clientX;
-        this.prev.y = e.clientY;
-      };
-
-      this.el.addEventListener('mousedown', this.onMouseDown);
-      window.addEventListener('mouseup', this.onMouseUp);
-      window.addEventListener('mousemove', this.onMouseMove);
-    }
-  });
-
-  // -----------------------------
-  // CLAMP ROTATION (VR SAFE)
-  // -----------------------------
-  AFRAME.registerComponent('clamp-rotation', {
-    schema: { max: { default: 30 } },
-    tick: function () {
-      const rot = this.el.getAttribute('rotation');
-      const max = this.data.max;
-
-      const x = Math.max(-max, Math.min(max, rot.x));
-      const y = Math.max(-max, Math.min(max, rot.y));
-
-      this.el.setAttribute('rotation', { x: x, y: y, z: 0 });
-    }
-  });
-
-  // -----------------------------
-  // PAGE CONTROLLER + ANIMATION
-  // -----------------------------
-  AFRAME.registerComponent('page-controller', {
-    init: function () {
-      this.index = 0;
-
-      this.folio = this.el.querySelector('#folio-object');
-      this.transcr = this.el.querySelector('#transcr-text');
-      this.transl = this.el.querySelector('#transl-text');
-      this.titleBox = this.el.querySelector('#info-text');
-
-      this.update();
-
-      document.querySelector('#swap-button').addEventListener('click', () => this.turnPage());
-
-      // CORNER GESTURE
-      const corner = this.el.querySelector('#page-corner');
-
-      corner.addEventListener('grab-end', (e) => {
-        this.turnPage();
-      });
-    },
-
-    turnPage: function () {
-      // simple believable page flip animation (hinge on left edge)
-      this.folio.setAttribute('animation__turn', {
-        property: 'rotation',
-        from: '0 0 0',
-        to: '0 -160 0',
-        dur: 400,
-        easing: 'easeInOutQuad'
+      const r = this.el.getAttribute('rotation');
+      this.el.setAttribute('rotation', {
+        x: r.x + dy,
+        y: r.y + dx,
+        z: 0
       });
 
-      setTimeout(() => {
-        this.index = (this.index + 1) % MANUSCRIPTS.length;
-        this.update();
+      this.prev.x = e.clientX;
+      this.prev.y = e.clientY;
+    });
+  }
+});
 
-        // reset rotation after flip
-        this.folio.setAttribute('rotation', '0 0 0');
-      }, 200);
-    },
+AFRAME.registerComponent('clamp-rotation', {
+  tick: function () {
+    const r = this.el.getAttribute('rotation');
+    const max = 30;
+    this.el.setAttribute('rotation', {
+      x: Math.max(-max, Math.min(max, r.x)),
+      y: Math.max(-max, Math.min(max, r.y)),
+      z: 0
+    });
+  }
+});
 
-    update: function () {
-      const m = MANUSCRIPTS[this.index];
+const MANUSCRIPTS = [
+{
+  title: "Liber Chronicarum, 1493, Hartmann Schedel",
+  img: "#manuscript1",
+  lat: `De Scocia\n\nScocia est insule in quo est anglia suprema portio et in aquilone versa. Flumibus haud magnis et monte quodam ab anglia discreta...`,
+  eng: `Concerning Scotland\n\nScotland is of the island in which England is the upper part...`
+},
+{
+  title: "Liber Pluscardensis, before 1500",
+  img: "#manuscript2",
+  lat: `Quorum cateruis sic gloriose circumuallatus...`,
+  eng: `Surrounded so gloriously by his companies...`
+}
+];
 
-      this.folio.setAttribute('src', m.img);
-      this.transcr.setAttribute('value', m.lat);
-      this.transl.setAttribute('value', m.eng);
-      this.titleBox.setAttribute('value', m.title);
-    }
-  });
+AFRAME.registerComponent('page-controller', {
+init: function () {
+this.index = 0;
+this.folio = document.querySelector('#folio-object');
+this.transcr = document.querySelector('#transcr-text');
+this.transl = document.querySelector('#transl-text');
+this.info = document.querySelector('#info-text');
 
-  // -----------------------------
-  // ZOOM
-  // -----------------------------
-  AFRAME.registerComponent('zoom-controller', {
-    init: function () {
-      const anchor = this.el.querySelector('#zoom-anchor');
-      const ui = this.el.querySelector('#ui-group');
-      let zoomed = false;
+this.update();
 
-      document.querySelector('#zoom-button').addEventListener('click', () => {
-        zoomed = !zoomed;
+document.querySelector('#swap-button').addEventListener('click', () => this.turn());
 
-        anchor.setAttribute('animation', {
-          property: 'position',
-          to: zoomed ? '0 1.5 -0.7' : '0 1.1 -1.4',
-          dur: 800
-        });
+const corner = document.querySelector('#page-corner');
+corner.addEventListener('grab-end', () => this.turn());
+},
 
-        ui.setAttribute('animation', {
-          property: 'position',
-          to: zoomed ? '0.6 0.3 0' : '0.9 1.1 -1.2',
-          dur: 800
-        });
-      });
-    }
-  });
+turn: function () {
+this.folio.setAttribute('animation__turn', {
+property: 'rotation', to: '0 -160 0', dur: 400
+});
 
-  </script></head><body>
-  <a-scene
-    renderer="antialias: true; colorManagement: true"
-    vr-mode-toggle
-    page-controller
-    zoom-controller><a-assets>
-  <img id="manuscript1" src="folio.jpg">
-  <img id="manuscript2" src="folio2.jpg">
-</a-assets>
+setTimeout(() => {
+this.index = (this.index + 1) % MANUSCRIPTS.length;
+this.update();
+this.folio.setAttribute('rotation', '0 0 0');
+}, 200);
+},
 
-<a-entity environment="preset: starry"></a-entity>
+update: function () {
+const m = MANUSCRIPTS[this.index];
+this.folio.setAttribute('src', m.img);
+this.transcr.setAttribute('value', m.lat);
+this.transl.setAttribute('value', m.eng);
+this.info.setAttribute('value', m.title);
+}
+});
 
-<a-entity id="zoom-anchor" position="0 1.1 -1.4">
+AFRAME.registerComponent('zoom-controller', {
+init: function () {
+const anchor = document.querySelector('#zoom-anchor');
+const ui = document.querySelector('#ui-group');
+let z = false;
 
-  <!-- FOLIO -->
-  <a-plane id="folio-object"
-           class="grabbable stretchable draggable clickable"
-           drag-rotate
-           clamp-rotation
-           width="1.1" height="0.8">
-  </a-plane>
+document.querySelector('#zoom-button').addEventListener('click', () => {
+z = !z;
+anchor.setAttribute('animation', { property: 'position', to: z ? '0 1.5 -0.7' : '0 1.1 -1.4', dur: 800 });
+ui.setAttribute('animation', { property: 'position', to: z ? '0.6 0.3 0' : '0.9 1.1 -1.2', dur: 800 });
+});
+}
+});
 
-  <!-- PAGE CORNER (TURN HOTSPOT) -->
-  <a-plane id="page-corner"
-           class="grabbable"
-           position="0.5 -0.35 0.01"
-           width="0.2" height="0.2"
-           opacity="0">
-  </a-plane>
+AFRAME.registerComponent('audio-controller', {
+init: function () {
+const sound = document.querySelector('#ambient-sound');
+const btn = document.querySelector('#mute-button');
+let muted = false;
 
-  <!-- UI -->
-  <a-entity id="ui-group" position="0.9 1.1 -1.2">
-    <a-sphere id="zoom-button" radius="0.04"></a-sphere>
-    <a-sphere id="swap-button" position="0 -0.15 0" radius="0.04"></a-sphere>
-  </a-entity>
+btn.addEventListener('click', () => {
+const s = sound.components.sound;
+if (!s) return;
+muted = !muted;
+muted ? s.pauseSound() : s.playSound();
+});
 
-</a-entity>
+window.addEventListener('click', () => {
+const s = sound.components.sound;
+if (s) s.playSound();
+}, { once: true });
+}
+});
 
-<!-- INFO PANEL -->
-<a-entity position="-1.0 1.1 -1.2">
-  <a-plane width="0.6" height="0.3" color="#111"></a-plane>
-  <a-text id="info-text"
-          value="Liber Chronicarum, 1493, Hartmann Schedel"
-          align="center"
-          width="0.55"
-          position="0 0 0.02"></a-text>
-</a-entity>
+</script></head><body>
+<a-scene page-controller zoom-controller audio-controller><a-assets>
+<img id="manuscript1" src="folio.jpg">
+<img id="manuscript2" src="folio2.jpg">
+<audio id="music" src="chant.mp3"></audio>
+</a-assets><a-entity environment="preset: starry"></a-entity> <a-entity light="type: ambient; intensity: 0.6"></a-entity>
 
-<!-- TEXT -->
-<a-entity position="-1.9 1.1 -0.5">
-  <a-plane width="0.9" height="1.8" color="#111"></a-plane>
-  <a-text id="transl-text" width="0.8" position="-0.4 0 0.02"></a-text>
-</a-entity>
+<a-entity id="ambient-sound" sound="src: #music; loop: true; volume: 0.5"></a-entity>
 
-<a-entity position="-2.2 1.1 0.5">
-  <a-plane width="0.9" height="1.8" color="#111"></a-plane>
-  <a-text id="transcr-text" width="0.8" position="-0.4 0 0.02"></a-text>
-</a-entity>
+<a-entity id="zoom-anchor" position="0 1.1 -1.4"><a-plane id="folio-object" class="grabbable clickable" drag-rotate clamp-rotation width="1.1" height="0.8"></a-plane>
 
-<!-- HANDS -->
-<a-entity hand-controls="left" super-hands></a-entity>
-<a-entity hand-controls="right" super-hands></a-entity>
+<a-plane id="page-corner" class="grabbable" position="0.5 -0.35 0.01" width="0.2" height="0.2" opacity="0"></a-plane>
 
-<!-- CAMERA -->
+<a-entity id="ui-group" position="0.9 1.1 -1.2">
+<a-sphere id="zoom-button" class="clickable" radius="0.05" color="#FFD700"></a-sphere>
+<a-sphere id="swap-button" class="clickable" position="0 -0.15 0" radius="0.05" color="#cd7f32"></a-sphere>
+<a-box id="mute-button" class="clickable" position="0 -0.3 0" depth="0.06" height="0.06" width="0.06" color="#FF4500"></a-box>
+</a-entity></a-entity><a-entity position="-1.0 1.1 -1.2">
+<a-plane width="0.6" height="0.3" color="#111"></a-plane>
+<a-text id="info-text" value="" width="0.55" align="center" position="0 0 0.02"></a-text>
+</a-entity><a-entity position="-1.9 1.1 -0.5">
+<a-plane width="0.9" height="1.8" color="#111"></a-plane>
+<a-text id="transl-text" width="0.8" wrap-count="30" position="-0.4 0 0.02"></a-text>
+</a-entity><a-entity position="-2.2 1.1 0.5">
+<a-plane width="0.9" height="1.8" color="#111"></a-plane>
+<a-text id="transcr-text" width="0.8" wrap-count="30" position="-0.4 0 0.02"></a-text>
+</a-entity><a-entity hand-controls="left" super-hands></a-entity> <a-entity hand-controls="right" super-hands></a-entity>
+
 <a-entity camera look-controls position="0 1.6 0">
-  <a-cursor raycaster="objects: .clickable" fuse="true"></a-cursor>
-</a-entity>
-
-  </a-scene>
+<a-cursor raycaster="objects: .clickable" fuse="true"></a-cursor>
+</a-entity></a-scene>
 </body>
 </html>
