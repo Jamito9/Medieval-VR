@@ -31,14 +31,17 @@
               var deltaX = (e.clientX - this.x_cord) * 0.1;
               var deltaY = (e.clientY - this.y_cord) * 0.1;
 
-              // Apply and Clamp (Max 30 degrees from origin)
               var nextY = rotation.y + deltaX;
               var nextX = rotation.x + deltaY;
 
-              rotation.y = Math.max(-30, Math.min(30, nextY));
-              rotation.x = Math.max(-60, Math.min(10, nextX));
+              // Explicitly pass a new object to ensure A-Frame registers the update
+              var newRotation = {
+                x: Math.max(-60, Math.min(10, nextX)),
+                y: Math.max(-30, Math.min(30, nextY)),
+                z: rotation.z
+              };
 
-              this.el.setAttribute('rotation', rotation);
+              this.el.setAttribute('rotation', newRotation);
               this.x_cord = e.clientX;
               this.y_cord = e.clientY;
             }
@@ -53,6 +56,8 @@
           const folio = document.querySelector('#folio-object');
           const soundEl = document.querySelector('#ambient-sound');
           const hoverTooltip = document.querySelector('#hover-tooltip');
+          const btnGroup = document.querySelector('#button-group');
+          const infoPanel = document.querySelector('#info-panel');
          
           let zoomed = false;
           let materialityMode = false;
@@ -71,10 +76,10 @@
           folio.addEventListener('mouseleave', () => hoverTooltip.setAttribute('visible', 'false'));
 
           // GOLD BUTTON: ZOOM / RESET 
-          // Animate the WRAPPER, so the book and the UI stay together when moving closer
+          // Target slightly adjusted to -0.9 so the VR cursor doesn't clip behind it.
           document.querySelector('#zoom-button').addEventListener('click', () => {
             if (!zoomed) {
-              wrapper.setAttribute('animation', {property: 'position', to: '0 1.5 -0.8', dur: 800});
+              wrapper.setAttribute('animation', {property: 'position', to: '0 1.5 -0.9', dur: 800});
               wrapper.setAttribute('animation__rot', {property: 'rotation', to: '0 0 0', dur: 800});
               zoomed = true;
             } else {
@@ -98,23 +103,34 @@
             document.querySelector('#hover-text').setAttribute('value', (currentPage === 1) ? 'Liber Chronicarum' : 'Liber Pluscardensis');
           });
 
-          // BLUE BUTTON: SCALE
+          // BLUE BUTTON: SCALE (DYNAMIC UI SPACING)
+          // Automatically pushes the UI outward when scaling to prevent clipping
           document.querySelector('#scale-button').addEventListener('click', () => {
             scaleState = (scaleState + 1) % 3;
+            
             const scales = ['1 1 1', '1.6 1.6 1.6', '0.6 0.6 0.6'];
-            folio.setAttribute('scale', scales[scaleState]);
+            const btnPositions = ['0.9 0 0.1', '1.25 0 0.1', '0.7 0 0.1'];
+            const infoPositions = ['-1.2 0 0.1', '-1.55 0 0.1', '-1.0 0 0.1'];
+            
+            folio.setAttribute('animation__scale', {property: 'scale', to: scales[scaleState], dur: 500});
+            btnGroup.setAttribute('animation__pos', {property: 'position', to: btnPositions[scaleState], dur: 500});
+            infoPanel.setAttribute('animation__pos', {property: 'position', to: infoPositions[scaleState], dur: 500});
           });
 
           // RED BUTTON: MUTE/UNMUTE LOGIC
           document.querySelector('#mute-button').addEventListener('click', () => {
             isMuted = !isMuted;
             const muteCube = document.querySelector('#mute-button');
+            const muteText = muteCube.querySelector('a-text');
+            
             if (isMuted) {
               soundEl.components.sound.pauseSound();
               muteCube.setAttribute('color', '#8B0000'); // Dark Red
+              muteText.setAttribute('value', 'UNMUTE');
             } else {
               soundEl.components.sound.playSound();
               muteCube.setAttribute('color', '#FF4500'); // Bright Red
+              muteText.setAttribute('value', 'MUTE');
             }
           });
         }
@@ -161,7 +177,7 @@
 
           </a-plane>
 
-          <a-entity id="info-panel" position="-1.2 0.2 0.1" rotation="0 20 0" visible="true">
+          <a-entity id="info-panel" position="-1.2 0 0.1" rotation="0 20 0" visible="true">
               <a-plane width="0.9" height="0.6" color="#111" opacity="0.9"></a-plane>
               <a-text value="MANUSCRIPT DATA\n\nUse buttons to explore.\nClick & Drag folio to tilt." color="white" align="center" width="0.7" position="0 0 0.02"></a-text>
           </a-entity>
@@ -180,14 +196,14 @@
                 <a-text value="SCALE" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
               </a-sphere>
               <a-box id="mute-button" class="clickable" position="0 -0.3 0" width="0.07" height="0.07" depth="0.07" color="#FF4500">
-                <a-text value="MUTE/UNMUTE" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
+                <a-text value="MUTE" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
               </a-box>
           </a-entity>
 
       </a-entity>
 
       <a-entity camera look-controls wasd-controls position="0 1.6 0">
-        <a-cursor id="cursor" raycaster="objects: .clickable" color="#FFD700" fuse="true" fuse-timeout="1500"
+        <a-cursor id="cursor" position="0 0 -0.7" raycaster="objects: .clickable" color="#FFD700" fuse="true" fuse-timeout="1500"
                   animation__fusing="property: scale; startEvents: fusing; from: 1 1 1; to: 0.1 0.1 0.1; dur: 1500"
                   animation__mouseleave="property: scale; startEvents: mouseleave; to: 1 1 1; dur: 100">
         </a-cursor>
