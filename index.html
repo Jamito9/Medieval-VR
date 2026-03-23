@@ -7,13 +7,14 @@
     <script src="https://unpkg.com/aframe-environment-component@1.3.2/dist/aframe-environment-component.min.js"></script>
 
     <script>
-      // 1. YOUR ORIGINAL STABLE ROTATION COMPONENT (RESTORED)
+      // 1. STABLE ROTATION COMPONENT
       AFRAME.registerComponent('drag-rotate', {
         init: function () {
           this.ifMouseDown = false;
           this.x_cord = 0;
           this.y_cord = 0;
 
+          // Only start if clicking the folio itself
           this.el.addEventListener('mousedown', (e) => {
             this.ifMouseDown = true;
             this.x_cord = e.detail.cursorEl ? 0 : e.clientX;
@@ -25,8 +26,12 @@
           window.addEventListener('mousemove', (e) => {
             if (this.ifMouseDown) {
               var rotation = this.el.getAttribute('rotation');
+             
+              // Calculate movement
               var deltaX = (e.clientX - this.x_cord) * 0.1;
               var deltaY = (e.clientY - this.y_cord) * 0.1;
+
+              // Apply and Clamp (Max 30 degrees from origin)
               var nextY = rotation.y + deltaX;
               var nextX = rotation.x + deltaY;
 
@@ -41,12 +46,11 @@
         }
       });
 
-      // 2. STABLE APP LOGIC (WITH NEW MUTE LOGIC ADDED)
+      // 2. STABLE APP LOGIC
       AFRAME.registerComponent('scriptorium-logic', {
         init: function () {
+          const wrapper = document.querySelector('#manuscript-wrapper');
           const folio = document.querySelector('#folio-object');
-          const info = document.querySelector('#info-panel');
-          const btns = document.querySelector('#button-group');
           const soundEl = document.querySelector('#ambient-sound');
           const hoverTooltip = document.querySelector('#hover-tooltip');
          
@@ -54,7 +58,7 @@
           let materialityMode = false;
           let currentPage = 1;
           let scaleState = 0;
-          let isMuted = false; // New state for audio
+          let isMuted = false;
 
           // Audio Unlock
           window.addEventListener('click', () => {
@@ -66,14 +70,16 @@
           folio.addEventListener('mouseenter', () => hoverTooltip.setAttribute('visible', 'true'));
           folio.addEventListener('mouseleave', () => hoverTooltip.setAttribute('visible', 'false'));
 
-          // GOLD BUTTON: ZOOM / RESET
+          // GOLD BUTTON: ZOOM / RESET 
+          // Animate the WRAPPER, so the book and the UI stay together when moving closer
           document.querySelector('#zoom-button').addEventListener('click', () => {
             if (!zoomed) {
-              folio.setAttribute('animation', {property: 'position', to: '0 1.5 -0.8', dur: 800});
-              // Note: During zoom, info panel stays attached because it's a child
+              wrapper.setAttribute('animation', {property: 'position', to: '0 1.5 -0.8', dur: 800});
+              wrapper.setAttribute('animation__rot', {property: 'rotation', to: '0 0 0', dur: 800});
               zoomed = true;
             } else {
-              folio.setAttribute('animation', {property: 'position', to: '0 1.1 -1.5', dur: 800});
+              wrapper.setAttribute('animation', {property: 'position', to: '0 1.1 -1.5', dur: 800});
+              wrapper.setAttribute('animation__rot', {property: 'rotation', to: '-20 0 0', dur: 800});
               zoomed = false;
             }
           });
@@ -99,24 +105,22 @@
             folio.setAttribute('scale', scales[scaleState]);
           });
 
-          // NEW RED CUBE: MUTE LOGIC
+          // RED BUTTON: MUTE/UNMUTE LOGIC
           document.querySelector('#mute-button').addEventListener('click', () => {
             isMuted = !isMuted;
             const muteCube = document.querySelector('#mute-button');
             if (isMuted) {
               soundEl.components.sound.pauseSound();
-              muteCube.setAttribute('color', '#8B0000');
-              muteCube.querySelector('a-text').setAttribute('value', 'UNMUTE');
+              muteCube.setAttribute('color', '#8B0000'); // Dark Red
             } else {
               soundEl.components.sound.playSound();
-              muteCube.setAttribute('color', '#FF4500');
-              muteCube.querySelector('a-text').setAttribute('value', 'MUTE');
+              muteCube.setAttribute('color', '#FF4500'); // Bright Red
             }
           });
         }
       });
 
-      // 3. CANDLE FLICKER COMPONENT (RESTORED)
+      // 3. CANDLE FLICKER
       AFRAME.registerComponent('flicker', {
         tick: function () {
           if (Math.random() > 0.8) {
@@ -142,26 +146,29 @@
       <a-entity id="ambient-sound" sound="src: #music-track; loop: true; volume: 0.5;"></a-entity>
       <a-text id="sound-ui" value="CLICK TO START MUSIC" position="0 2.2 -2" align="center" color="#FFD700" width="3"></a-text>
 
-      <a-plane id="folio-object" class="clickable" drag-rotate src="#manuscript1"
-               position="0 1.1 -1.5" rotation="-20 0 0" width="1.2" height="0.85"
-               material="shader: standard; metalness: 0.1; roughness: 0.8;">
-         
-          <a-entity id="candle" light="type: point; color: #ffcc77; intensity: 2; distance: 5;" position="0 0.5 0.5" flicker></a-entity>
+      <a-entity id="manuscript-wrapper" position="0 1.1 -1.5" rotation="-20 0 0">
 
-          <a-entity id="hover-tooltip" position="0 0.55 0.05" visible="false">
-              <a-plane width="0.8" height="0.15" color="black" opacity="0.8"></a-plane>
-              <a-text id="hover-text" value="Liber Chronicarum" color="white" align="center" width="0.8" position="0 0 0.01"></a-text>
+          <a-plane id="folio-object" class="clickable" drag-rotate src="#manuscript1"
+                   position="0 0 0" rotation="0 0 0" width="1.2" height="0.85"
+                   material="shader: standard; metalness: 0.1; roughness: 0.8;">
+             
+              <a-entity id="candle" light="type: point; color: #ffcc77; intensity: 2; distance: 5;" position="0 0.5 0.5" flicker></a-entity>
+
+              <a-entity id="hover-tooltip" position="0 0.55 0.05" visible="false">
+                  <a-plane width="0.8" height="0.15" color="black" opacity="0.8"></a-plane>
+                  <a-text id="hover-text" value="Liber Chronicarum" color="white" align="center" width="0.8" position="0 0 0.01"></a-text>
+              </a-entity>
+
+          </a-plane>
+
+          <a-entity id="info-panel" position="-1.2 0.2 0.1" rotation="0 20 0" visible="true">
+              <a-plane width="0.9" height="0.6" color="#111" opacity="0.9"></a-plane>
+              <a-text value="MANUSCRIPT DATA\n\nUse buttons to explore.\nClick & Drag folio to tilt." color="white" align="center" width="0.7" position="0 0 0.02"></a-text>
           </a-entity>
 
-          <a-entity id="info-panel" position="-1.1 0 0.1" rotation="0 20 0" visible="true">
-              <a-plane width="0.8" height="0.6" color="#111" opacity="0.9"></a-plane>
-              <a-text value="MANUSCRIPT DATA\n\nTitle: Liber Chronicarum\nYear: 1493\n\nThis panel moves with the book." 
-                      color="white" align="center" width="0.7" position="0 0 0.02"></a-text>
-          </a-entity>
-
-          <a-entity id="button-group" position="0.85 0 0.1" rotation="0 -20 0">
+          <a-entity id="button-group" position="0.9 0 0.1" rotation="0 -20 0">
               <a-sphere id="zoom-button" class="clickable" position="0 0.3 0" radius="0.04" color="#FFD700">
-                <a-text value="ZOOM" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
+                <a-text value="ZOOM/RESET" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
               </a-sphere>
               <a-sphere id="mat-button" class="clickable" position="0 0.15 0" radius="0.04" color="#C0C0C0">
                 <a-text value="MATERIAL" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
@@ -173,10 +180,11 @@
                 <a-text value="SCALE" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
               </a-sphere>
               <a-box id="mute-button" class="clickable" position="0 -0.3 0" width="0.07" height="0.07" depth="0.07" color="#FF4500">
-                <a-text value="MUTE" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
+                <a-text value="MUTE/UNMUTE" align="left" position="0.07 0 0" scale="0.25 0.25 0.25" color="white"></a-text>
               </a-box>
           </a-entity>
-      </a-plane>
+
+      </a-entity>
 
       <a-entity camera look-controls wasd-controls position="0 1.6 0">
         <a-cursor id="cursor" raycaster="objects: .clickable" color="#FFD700" fuse="true" fuse-timeout="1500"
