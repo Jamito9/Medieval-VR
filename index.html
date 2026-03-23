@@ -45,13 +45,14 @@
           const hoverTooltip = document.querySelector('#hover-tooltip');
           const hoverText = document.querySelector('#hover-text');
           
-          // Panels & Text
           const infoPanel = document.querySelector('#info-panel');
           const transcrPanel = document.querySelector('#transcription-panel');
           const translPanel = document.querySelector('#translation-panel');
+          
           const infoText = document.querySelector('#info-text');
           const transcrText = document.querySelector('#transcr-text');
           const translText = document.querySelector('#transl-text');
+          const muteLabel = document.querySelector('#mute-label');
          
           let zoomed = false;
           let materialityMode = false;
@@ -63,45 +64,42 @@
 
           const playClick = () => { if (clickSound.components.sound) clickSound.components.sound.playSound(); };
 
-          // DATA STRINGS
-          const lat1 = "De Scocia\n\nScocia est insule in quo est anglia suprema portio et in aquilone versa. Flumibus haud magnis et monte quodam ab anglia discreta. Hic nos brunali tempore fuimus cum sol paulo amplius quam tris horis terram illusiaret. Jacobus eo tempore regnabat quadratus et multo abdomine grauis. qui cum olim in anglia captus . xi . annis in custodia fuisset. ac dimissus tandem suscepta ex anglica coniuge domum reuersus plures regulos gladio percussisset. et ipse tandem a suis domesticis interfectus est. Inter quos vltione pacata filius eius regnum suscepit. Audiueramus nos olim arborem esse in scocia quae supra ripas fluminis enata fructus produceret anetarum formam habentes... Id genus lapidis siue sulphurea siue alia pingues materia praeditum pro ligno quo regio nuda est comburitur.";
-          const eng1 = "Concerning Scotland\n\nScotland is of the island in which England is the upper part, and it lies toward the north. It is separated from England by rivers not large and by a certain mountain. We were here in the winter season, when the sun shone upon the earth for a little more than three hours. [King] James [IV] reigned at that time, square-built and burdened with a very large belly. He, having once been captured in England and kept in custody for eleven years, and at last released, after taking an English wife, returned home and struck down several petty rulers with the sword... About the matter, therefore, when we investigated more eagerly, we learned that marvels flee closer scrutiny... This kind of stone, endowed with a sulphurous or other rich material, is burned in place of wood, of which the region is bare.";
+          const lat1 = "De Scocia\n\nScocia est insule in quo est anglia suprema portio et in aquilone versa. Flumibus haud magnis et monte quodam ab anglia discreta. Hic nos brunali tempore fuimus cum sol paulo amplius quam tris horis terram illusiaret. Jacobus eo tempore regnabat quadratus et multo abdomine grauis. qui cum olim in anglia captus . xi . annis in custodia fuisset. ac dimissus tandem suscepta ex anglica coniuge domum reuersus plures regulos gladio percussisset. et ipse tandem a suis domesticis interfectus est. Inter quos vltione pacata filius eius regnum suscepit. Audiueramus nos olim arborem esse in scocia quae supra ripas fluminis enata fructus produceret anetarum formam habentes et eos cum quidem maturitati proximi essent sponte sua decider. alios in terra. alios in aquam. et in terra deiectos putrescere. in aquam vero dimersos mox aviatos enatare sub aquis et in aera plumis plenisque euestigio euolare. De quare cum aidius inuestigaremus didicimus miracula spe remotius fugere famosamque arborem non in scocia sed apud olchades insulas inueniri. Illud tamen nobis in scocia miraculum praesentatum est. nam pauperes pene nudos ad ecclesias mendicantes acceptis lapidibus elemosine gratia datis letos abiisse conspeximus. Id genus lapidis siue sulphurea siue alia pingues materia praeditum pro ligno quo regio nuda est comburitur.";
+          const eng1 = "Concerning Scotland\n\nScotland is of the island in which England is the upper part, and it lies toward the north. It is separated from England by rivers not large and by a certain mountain. We were here in the winter season, when the sun shone upon the earth for a little more than three hours. [King] James [IV] reigned at that time, square-built and burdened with a very large belly. He, having once been captured in England and kept in custody for eleven years, and at last released, after taking an English wife, returned home and struck down several petty rulers with the sword. And he himself was at last killed by his own household, among whom, vengeance having been settled, his son took up the kingdom. We had once heard that there was in Scotland a tree which, growing above the banks of a river, produced fruits having the form of ducks, and these indeed, when they were near maturity, fell of their own accord, some onto the land, others into the water. And those cast onto the land rot; but those plunged into the water, however, soon become birds, swim beneath the waters, and fly into the air with feathers and full plumage. About the matter, therefore, when we investigated more eagerly, we learned that marvels flee closer scrutiny, and that the famous tree is found not in Scotland but among the Orkney Islands. Yet this marvel was shown to us in Scotland: for we saw poor people, almost naked, begging at the churches, who went away rejoicing after receiving stones given as alms. This kind of stone, endowed with a sulphurous or other rich material, is burned in place of wood, of which the region is bare.";
 
-          const lat2 = "Quorum cateruis sic gloriose circumuallatus et in gloria humane potencie sic confisus usque ad locum qui bannokburn dicitur perueniens tentoria sua fixit Cui rex robertus cum paucis respectu multitudinis eius in domino confidens et in deum virtutem faciens ac beatum andream apostolum et sanctum iohannem baptistam in eius auxilium ad miserabilem populum scocie de seruitute indebita liberandum postulans cum dicto rege anglie mortale commisit bellum ac ipsum cum omni pompa sua et innumerabili potencia auxiliante altissimo cuius est victoriam dare... ubi comes glouernie et multi nobiles anglie ceciderunt interfecti… alii fugati . alii capti . alii occisi… pro ipso liberatus est episcopus de glasguw vir venerabilis et magne senectutis... detentus londoniis [.]";
-          const eng2 = "Surrounded so gloriously by his companies, and trusting so confidently in the glory of human power, he [King Edward II of England] came as far as the place called Bannockburn and pitched his tents there. Against him King Robert, with only a few men, compared with his multitude, trusting in the Lord and taking strength in God... joined mortal battle with the said king of England. And him, with all his pomp and his innumerable power, the Most High assisting – whose prerogative it is to grant victory... he turned to flight. There the Earl of Gloucester and many nobles of England fell slain…. Others were put to flight; others were captured; others were killed… Likewise, in exchange for him, the bishop of Glasgow, a venerable man of great age, who had similarly been held in prison by the tyrant, was freed at London [.]";
+          const lat2 = "Quorum cateruis sic gloriose circumuallatus et in gloria humane potencie sic confisus usque ad locum qui bannokburn dicitur perueniens tentoria sua fixit Cui rex robertus cum paucis respectu multitudinis eius in domino confidens et in deum virtutem faciens ac beatum andream apostolum et sanctum iohannem baptistam in eius auxilium ad miserabilem populum scocie de seruitute indebita liberandum postulans cum dicto rege anglie mortale commisit bellum ac ipsum cum omni pompa sua et innumerabili potencia auxiliante altissimo cuius est victoriam dare, et in cuius manu sunt omnes fines terre in fugam conuertit ubi comes glouernie et multi nobiles anglie ceciderunt interfecti… alii fugati . alii capti . alii occisi… . per captiuos enim non solum regina scocie cum suis liberati sunt dimissa est ymmo eciam omnes alii scoti in carceribus deputati sine redempcione liberati sunt . Ac eciam omnes alii in dicto bello existentes inestimabiliter sunt ditati Inter quos captus est ille ditissimus iohannes de britania per quem liberata fuit regina scocie captiua quod absurdum esset audire reginam captiuam esse Item pro ipso liberatus est episcopus de glasguw vir venerabilis et magne senectutis in carceribus similiter per tirannum detentus londoniis [.]";
+          const eng2 = "Surrounded so gloriously by his companies, and trusting so confidently in the glory of human power, he [King Edward II of England] came as far as the place called Bannockburn and pitched his tents there. Against him King Robert, with only a few men, compared with his multitude, trusting in the Lord and taking strength in God, and calling upon Blessed Andrew the Apostle and Saint John the Baptist for aid in freeing the wretched people of Scotland from unjust servitude, joined mortal battle with the said king of England. And him, with all his pomp and his innumerable power, the Most High assisting – whose prerogative it is to grant victory, and in whose hand are all the ends of the earth – he turned to flight. There the Earl of Gloucester and many nobles of England fell slain…. Others were put to flight; others were captured; others were killed… For by means of the captives not only was the queen of Scotland, with her people, set free; indeed (what is more), all the other Scots who had been assigned to prisons were freed without ransom. And also all the others who were present in the said battle were enriched beyond measure. Among these was captured that very rich man, John of Brittany, through whom the queen of Scotland was freed from captivity, something which it would be absurd even to hear, namely that a queen should be held captive. Likewise, in exchange for him, the bishop of Glasgow, a venerable man of great age, who had similarly been held in prison by the tyrant, was freed at London [.]";
 
-          // HOVER TOOLTIP LOGIC
           folio.addEventListener('mouseenter', () => hoverTooltip.setAttribute('visible', 'true'));
           folio.addEventListener('mouseleave', () => hoverTooltip.setAttribute('visible', 'false'));
 
-          // SWAP PAGE LOGIC
           document.querySelector('#swap-button').addEventListener('click', () => {
             playClick();
             currentPage = (currentPage === 1) ? 2 : 1;
-            transcrY = 0; translY = 0; // Reset scroll
-            transcrText.setAttribute('position', {x: -0.45, y: -0.05, z: 0.02});
-            translText.setAttribute('position', {x: -0.45, y: -0.05, z: 0.02});
+            transcrY = 0; translY = 0;
+            transcrText.setAttribute('position', {x: -0.48, y: 0.1, z: 0.02});
+            translText.setAttribute('position', {x: -0.48, y: 0.1, z: 0.02});
 
             if (currentPage === 1) {
               folio.setAttribute('src', '#manuscript1');
               hoverText.setAttribute('value', 'Liber Chronicarum');
-              infoText.setAttribute('value', 'Liber Chronicarum, 1493, Hartmann Schedel\n\nUse buttons to explore.');
+              infoText.setAttribute('value', 'Liber Chronicarum, 1493, Hartmann Schedel');
               transcrText.setAttribute('value', lat1);
               translText.setAttribute('value', eng1);
             } else {
               folio.setAttribute('src', '#manuscript2');
               hoverText.setAttribute('value', 'Liber Pluscardensis');
-              infoText.setAttribute('value', 'Liber Pluscardensis, before 1500\n\nUse buttons to explore.');
+              infoText.setAttribute('value', 'Liber Pluscardensis, before 1500');
               transcrText.setAttribute('value', lat2);
               translText.setAttribute('value', eng2);
             }
           });
 
-          // SCROLLING
+          // SCROLLING (Updated for Taller Panels)
           const scroll = (el, val, dir) => {
             playClick();
-            let newY = dir === 'up' ? Math.max(0, val - 0.15) : Math.min(1.5, val + 0.15);
-            el.setAttribute('position', 'y', -0.05 + newY);
+            let newY = dir === 'up' ? Math.max(0, val - 0.2) : Math.min(2.0, val + 0.2);
+            el.setAttribute('position', 'y', 0.1 + newY);
             return newY;
           };
           document.querySelector('#btn-transcr-up').addEventListener('click', () => { transcrY = scroll(transcrText, transcrY, 'up'); });
@@ -109,29 +107,28 @@
           document.querySelector('#btn-transl-up').addEventListener('click', () => { translY = scroll(translText, translY, 'up'); });
           document.querySelector('#btn-transl-down').addEventListener('click', () => { translY = scroll(translText, translY, 'down'); });
 
-          // SCALE LOGIC (With protective spacing)
+          // SCALE LOGIC (Updated Wrapped Positions)
           document.querySelector('#scale-button').addEventListener('click', () => {
             playClick();
             scaleState = (scaleState + 1) % 3;
             const scales = ['1 1 1', '1.6 1.6 1.6', '0.6 0.6 0.6'];
             const btnX = ['1', '1.4', '0.8'];
-            const infoX = ['-1.3', '-1.7', '-1.1'];
-            const translX = ['-2.6', '-3.1', '-2.3'];
-            const transcrX = ['-3.9', '-4.5', '-3.5'];
+            const infoP = [{x: -1.2, z: 0.2}, {x: -1.6, z: 0.3}, {x: -1.0, z: 0.15}];
+            const translP = [{x: -2.0, z: 0.8}, {x: -2.6, z: 1.1}, {x: -1.6, z: 0.6}];
+            const transcrP = [{x: -2.5, z: 1.8}, {x: -3.2, z: 2.3}, {x: -2.0, z: 1.4}];
 
             folio.setAttribute('animation__scale', {property: 'scale', to: scales[scaleState], dur: 500});
             btnGroup.setAttribute('animation__p', {property: 'position', x: btnX[scaleState], dur: 500});
-            infoPanel.setAttribute('animation__p', {property: 'position', x: infoX[scaleState], dur: 500});
-            translPanel.setAttribute('animation__p', {property: 'position', x: translX[scaleState], dur: 500});
-            transcrPanel.setAttribute('animation__p', {property: 'position', x: transcrX[scaleState], dur: 500});
+            infoPanel.setAttribute('animation__p', {property: 'position', x: infoP[scaleState].x, z: infoP[scaleState].z, dur: 500});
+            translPanel.setAttribute('animation__p', {property: 'position', x: translP[scaleState].x, z: translP[scaleState].z, dur: 500});
+            transcrPanel.setAttribute('animation__p', {property: 'position', x: transcrP[scaleState].x, z: transcrP[scaleState].z, dur: 500});
           });
 
-          // UTILITY BUTTONS
+          // UTILITY
           document.querySelector('#zoom-button').addEventListener('click', () => {
             playClick();
             zoomed = !zoomed;
             wrapper.setAttribute('animation', {property: 'position', to: zoomed ? '0 1.5 -0.8' : '0 1.1 -1.5', dur: 800});
-            wrapper.setAttribute('animation__rot', {property: 'rotation', to: zoomed ? '0 0 0' : '-20 0 0', dur: 800});
           });
 
           document.querySelector('#mat-button').addEventListener('click', () => {
@@ -143,8 +140,16 @@
           document.querySelector('#mute-button').addEventListener('click', () => {
             playClick();
             isMuted = !isMuted;
-            if (isMuted) { ambientSound.components.sound.pauseSound(); document.querySelector('#mute-button').setAttribute('color', '#8B0000'); }
-            else { ambientSound.components.sound.playSound(); document.querySelector('#mute-button').setAttribute('color', '#FF4500'); }
+            const muteBtn = document.querySelector('#mute-button');
+            if (isMuted) { 
+              ambientSound.components.sound.pauseSound(); 
+              muteBtn.setAttribute('color', '#8B0000'); 
+              muteLabel.setAttribute('value', 'UNMUTE');
+            } else { 
+              ambientSound.components.sound.playSound(); 
+              muteBtn.setAttribute('color', '#FF4500'); 
+              muteLabel.setAttribute('value', 'MUTE');
+            }
           });
 
           window.addEventListener('click', () => { if (ambientSound.components.sound) ambientSound.components.sound.playSound(); document.querySelector('#sound-ui').setAttribute('visible', 'false'); }, { once: true });
@@ -163,9 +168,9 @@
       </a-assets>
 
       <a-entity environment="preset: starry; lighting: none;"></a-entity>
-      <a-entity light="type: ambient; intensity: 0.3;"></a-entity>
+      <a-entity light="type: ambient; intensity: 0.4;"></a-entity>
       <a-entity id="ambient-sound" sound="src: #music-track; loop: true; volume: 0.4;"></a-entity>
-      <a-entity id="click-sound-el" sound="src: #click-asset; volume: 0.8; poolSize: 5;"></a-entity>
+      <a-entity id="click-sound-el" sound="src: #click-asset; volume: 0.4; poolSize: 5;"></a-entity>
       
       <a-text id="sound-ui" value="CLICK TO START" position="0 2.2 -2" align="center" color="#FFD700" width="4"></a-text>
 
@@ -173,32 +178,31 @@
           
           <a-plane id="folio-object" class="clickable" drag-rotate src="#manuscript1" width="1.2" height="0.85">
               <a-entity light="type: point; color: #ffcc77; intensity: 2; distance: 5;" position="0 0.5 0.5"></a-entity>
-              
               <a-entity id="hover-tooltip" position="0 0.55 0.05" visible="false">
                   <a-plane width="0.8" height="0.15" color="black" opacity="0.8"></a-plane>
                   <a-text id="hover-text" value="Liber Chronicarum" color="white" align="center" width="0.8"></a-text>
               </a-entity>
           </a-plane>
 
-          <a-entity id="info-panel" position="-1.3 0 0.1" rotation="0 20 0">
+          <a-entity id="info-panel" position="-1.2 0 0.2" rotation="0 25 0">
               <a-plane width="1" height="0.8" color="#111" opacity="0.9"></a-plane>
-              <a-text id="info-text" value="Liber Chronicarum, 1493, Hartmann Schedel\n\nUse buttons to explore." color="#FFD700" align="center" width="0.9" position="0 0.1 0.02"></a-text>
+              <a-text id="info-text" value="Liber Chronicarum, 1493, Hartmann Schedel" color="#FFD700" align="center" width="0.9" position="0 0.1 0.02"></a-text>
           </a-entity>
 
-          <a-entity id="translation-panel" position="-2.6 0 0.4" rotation="0 35 0">
-              <a-plane width="1.1" height="0.8" color="#111" opacity="0.9"></a-plane>
-              <a-text value="ENGLISH TRANSLATION" color="#FFD700" align="center" width="0.9" position="0 0.35 0.02"></a-text>
-              <a-text id="transl-text" value="Concerning Scotland..." color="#FFFFFF" align="left" width="1" position="-0.48 -0.05 0.02" wrap-count="38"></a-text>
-              <a-triangle id="btn-transl-up" class="clickable" color="#FF4500" scale="0.08 0.08 0.08" position="0.48 0.2 0.03"></a-triangle>
-              <a-triangle id="btn-transl-down" class="clickable" color="#FF4500" scale="0.08 0.08 0.08" position="0.48 -0.2 0.03" rotation="0 0 180"></a-triangle>
+          <a-entity id="translation-panel" position="-2.0 0 0.8" rotation="0 45 0">
+              <a-plane width="1.1" height="1.4" color="#111" opacity="0.9"></a-plane>
+              <a-text value="ENGLISH TRANSLATION" color="#FFD700" align="center" width="0.9" position="0 0.6 0.02"></a-text>
+              <a-text id="transl-text" value="Concerning Scotland..." color="#FFFFFF" align="left" width="1" position="-0.48 0.1 0.02" wrap-count="36"></a-text>
+              <a-triangle id="btn-transl-up" class="clickable" color="#FF4500" scale="0.1 0.1 0.1" position="0.48 0.4 0.03"></a-triangle>
+              <a-triangle id="btn-transl-down" class="clickable" color="#FF4500" scale="0.1 0.1 0.1" position="0.48 -0.4 0.03" rotation="0 0 180"></a-triangle>
           </a-entity>
 
-          <a-entity id="transcription-panel" position="-3.9 0 0.9" rotation="0 50 0">
-              <a-plane width="1.1" height="0.8" color="#111" opacity="0.9"></a-plane>
-              <a-text value="LATIN TRANSCRIPTION" color="#FFD700" align="center" width="0.9" position="0 0.35 0.02"></a-text>
-              <a-text id="transcr-text" value="De Scocia..." color="#FFFFFF" align="left" width="1" position="-0.48 -0.05 0.02" wrap-count="38"></a-text>
-              <a-triangle id="btn-transcr-up" class="clickable" color="#FF4500" scale="0.08 0.08 0.08" position="0.48 0.2 0.03"></a-triangle>
-              <a-triangle id="btn-transcr-down" class="clickable" color="#FF4500" scale="0.08 0.08 0.08" position="0.48 -0.2 0.03" rotation="0 0 180"></a-triangle>
+          <a-entity id="transcription-panel" position="-2.5 0 1.8" rotation="0 70 0">
+              <a-plane width="1.1" height="1.4" color="#111" opacity="0.9"></a-plane>
+              <a-text value="LATIN TRANSCRIPTION" color="#FFD700" align="center" width="0.9" position="0 0.6 0.02"></a-text>
+              <a-text id="transcr-text" value="De Scocia..." color="#FFFFFF" align="left" width="1" position="-0.48 0.1 0.02" wrap-count="36"></a-text>
+              <a-triangle id="btn-transcr-up" class="clickable" color="#FF4500" scale="0.1 0.1 0.1" position="0.48 0.4 0.03"></a-triangle>
+              <a-triangle id="btn-transcr-down" class="clickable" color="#FF4500" scale="0.1 0.1 0.1" position="0.48 -0.4 0.03" rotation="0 0 180"></a-triangle>
           </a-entity>
 
           <a-entity id="button-group" position="1 0 0.1" rotation="0 -20 0">
@@ -206,18 +210,17 @@
               <a-sphere id="mat-button" class="clickable" position="0 0.15 0" radius="0.04" color="#C0C0C0"><a-text value="MATERIAL" position="0.07 0 0" scale="0.25 0.25 0.25"></a-text></a-sphere>
               <a-sphere id="swap-button" class="clickable" position="0 0 0" radius="0.04" color="#cd7f32"><a-text value="SWAP PAGE" position="0.07 0 0" scale="0.25 0.25 0.25"></a-text></a-sphere>
               <a-sphere id="scale-button" class="clickable" position="0 -0.15 0" radius="0.04" color="#4CC3D9"><a-text value="SCALE" position="0.07 0 0" scale="0.25 0.25 0.25"></a-text></a-sphere>
-              <a-box id="mute-button" class="clickable" position="0 -0.3 0" width="0.06" height="0.06" depth="0.06" color="#FF4500"><a-text value="MUTE" position="0.07 0 0" scale="0.25 0.25 0.25"></a-text></a-box>
+              <a-box id="mute-button" class="clickable" position="0 -0.3 0" width="0.06" height="0.06" depth="0.06" color="#FF4500">
+                <a-text id="mute-label" value="MUTE" position="0.07 0 0" scale="0.25 0.25 0.25"></a-text>
+              </a-box>
           </a-entity>
 
       </a-entity>
 
       <a-entity camera look-controls wasd-controls position="0 1.6 0">
-        <a-cursor position="0 0 -0.7" raycaster="objects: .clickable" color="#FFD700" fuse="true" fuse-timeout="1500"
-                  animation__fusing="property: scale; startEvents: fusing; from: 1 1 1; to: 0.1 0.1 0.1; dur: 1500"
-                  animation__mouseleave="property: scale; startEvents: mouseleave; to: 1 1 1; dur: 100">
-        </a-cursor>
+        <a-cursor position="0 0 -0.7" raycaster="objects: .clickable" color="#FFD700" fuse="true" fuse-timeout="1500"></a-cursor>
       </a-entity>
 
     </a-scene>
   </body>
-</html
+</html>
