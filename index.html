@@ -2,6 +2,191 @@
 <html>
   <head>
     <meta charset="utf-8">
+    <title>Medieval Scriptorium</title>
+    <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
+    <script src="https://unpkg.com/aframe-environment-component@1.3.2/dist/aframe-environment-component.min.js"></script>
+
+    <script>
+      AFRAME.registerComponent('drag-rotate', {
+        init: function () {
+          this.ifMouseDown = false;
+          this.x_cord = 0; this.y_cord = 0;
+          this.el.addEventListener('mousedown', (e) => {
+            this.ifMouseDown = true;
+            this.x_cord = e.detail.cursorEl ? 0 : e.clientX;
+            this.y_cord = e.detail.cursorEl ? 0 : e.clientY;
+          });
+          window.addEventListener('mouseup', () => { this.ifMouseDown = false; });
+          window.addEventListener('mousemove', (e) => {
+            if (this.ifMouseDown) {
+              var rotation = this.el.getAttribute('rotation');
+              this.el.setAttribute('rotation', {
+                x: Math.max(-60, Math.min(10, rotation.x + (e.clientY - this.y_cord) * 0.1)),
+                y: Math.max(-30, Math.min(30, rotation.y + (e.clientX - this.x_cord) * 0.1)),
+                z: rotation.z
+              });
+              this.x_cord = e.clientX; this.y_cord = e.clientY;
+            }
+          });
+        }
+      });
+
+      AFRAME.registerComponent('scriptorium-logic', {
+        init: function () {
+          const wrapper = document.querySelector('#manuscript-wrapper');
+          const folio = document.querySelector('#folio-object');
+          const ambientSound = document.querySelector('#ambient-sound');
+          const clickSound = document.querySelector('#click-sound-el');
+          const btnGroup = document.querySelector('#button-group');
+          
+          const infoPanel = document.querySelector('#info-panel');
+          const transcrPanel = document.querySelector('#transcription-panel');
+          const translPanel = document.querySelector('#translation-panel');
+          
+          const infoText = document.querySelector('#info-text');
+          const transcrText = document.querySelector('#transcr-text');
+          const translText = document.querySelector('#transl-text');
+          const muteLabel = document.querySelector('#mute-label');
+         
+          let zoomed = false; let materialityMode = false;
+          let currentPage = 1; let scaleState = 0; let isMuted = false;
+
+          const lat1 = "De Scocia\n\nScocia est insule in quo est anglia suprema portio et in aquilone versa. Flumibus haud magnis et monte quodam ab anglia discreta. Hic nos brunali tempore fuimus cum sol paulo amplius quam tris horis terram illusiaret. Jacobus eo tempore regnabat quadratus et multo abdomine grauis. qui cum olim in anglia captus . xi . annis in custodia fuisset. ac dimissus tandem suscepta ex anglica coniuge domum reuersus plures regulos gladio percussisset. et ipse tandem a suis domesticis interfectus est. Inter quos vltione pacata filius eius regnum suscepit. Audiueramus nos olim arborem esse in scocia quae supra ripas fluminis enata fructus produceret anetarum formam habentes... Id genus lapidis siue sulphurea siue alia pingues materia praeditum pro ligno quo regio nuda est comburitur.";
+          const eng1 = "Concerning Scotland\n\nScotland is of the island in which England is the upper part, and it lies toward the north. It is separated from England by rivers not large and by a certain mountain. We were here in the winter season, when the sun shone upon the earth for a little more than three hours. [King] James [IV] reigned at that time, square-built and burdened with a very large belly. He, having once been captured in England and kept in custody for eleven years, and at last released, after taking an English wife, returned home and struck down several petty rulers with the sword. And he himself was at last killed by his own household... This kind of stone, endowed with a sulphurous or other rich material, is burned in place of wood, of which the region is bare.";
+
+          const lat2 = "Quorum cateruis sic gloriose circumuallatus... Cui rex robertus cum paucis respectu multitudinis eius in domino confidens... cum dicto rege anglie mortale commisit bellum ac ipsum cum omni pompa sua et innumerabili potencia auxiliante altissimo cuius est victoriam dare... ubi comes glouernie et multi nobiles anglie ceciderunt interfecti… alii fugati . alii capti . alii occisi… per captiuos enim non solum regina scocie cum suis liberati sunt... Ac eciam omnes alii in dicto bello existentes inestimabiliter sunt ditati. Item pro ipso liberatus est episcopus de glasguw vir venerable et magne senectutis in carceribus similiter per tirannum detentus londoniis [.]";
+          const eng2 = "Surrounded so gloriously by his companies... he came as far as the place called Bannockburn and pitched his tents there. Against him King Robert, with only a few men... trusting in the Lord and taking strength in God... joined mortal battle with the said king of England. And him, with all his pomp and his innumerable power, the Most High assisting... he turned to flight. There the Earl of Gloucester and many nobles of England fell slain…. Others were put to flight; others were captured; others were killed… Likewise, in exchange for him, the bishop of Glasgow, a venerable man of great age, who had similarly been held in prison by the tyrant, was freed at London [.]";
+
+          // BOOTSTRAP INITIAL TEXT
+          transcrText.setAttribute('value', lat1);
+          translText.setAttribute('value', eng1);
+          infoText.setAttribute('value', 'Liber Chronicarum\n1493\nHartmann Schedel');
+
+          const playClick = () => { if (clickSound.components.sound) clickSound.components.sound.playSound(); };
+
+          // HIGHLIGHT COMPONENT
+          const setupHighlight = (id) => {
+            const el = document.querySelector(id);
+            const plane = el.querySelector('a-plane');
+            el.addEventListener('mouseenter', () => { plane.setAttribute('color', '#333'); plane.setAttribute('opacity', '1.0'); });
+            el.addEventListener('mouseleave', () => { plane.setAttribute('color', '#111'); plane.setAttribute('opacity', '0.9'); });
+          };
+          setupHighlight('#info-panel'); setupHighlight('#translation-panel'); setupHighlight('#transcription-panel');
+
+          document.querySelector('#swap-button').addEventListener('click', () => {
+            playClick();
+            currentPage = (currentPage === 1) ? 2 : 1;
+            if (currentPage === 1) {
+              folio.setAttribute('src', '#manuscript1');
+              infoText.setAttribute('value', 'Liber Chronicarum\n1493\nHartmann Schedel');
+              transcrText.setAttribute('value', lat1);
+              translText.setAttribute('value', eng1);
+            } else {
+              folio.setAttribute('src', '#manuscript2');
+              infoText.setAttribute('value', 'Liber Pluscardensis\nBefore 1500');
+              transcrText.setAttribute('value', lat2);
+              translText.setAttribute('value', eng2);
+            }
+          });
+
+          document.querySelector('#scale-button').addEventListener('click', () => {
+            playClick();
+            scaleState = (scaleState + 1) % 3;
+            const scales = ['1 1 1', '1.6 1.6 1.6', '0.6 0.6 0.6'];
+            // Wider spacing for the left panels
+            const transcrP = [{x: -2.3, z: 1.8}, {x: -3.2, z: 2.5}, {x: -1.6, z: 1.3}];
+            const translP = [{x: -1.5, z: 0.8}, {x: -2.2, z: 1.2}, {x: -1.1, z: 0.6}];
+            const infoP = [{x: -0.9, z: 0.1}, {x: -1.3, z: 0.2}, {x: -0.7, z: 0.05}];
+            // Buttons are anchored to folio, so we just shift the group slightly if needed
+            const btnP = [{x: 0.75, z: 0.05}, {x: 1.1, z: 0.1}, {x: 0.5, z: 0.02}];
+
+            folio.setAttribute('animation__scale', {property: 'scale', to: scales[scaleState], dur: 500});
+            transcrPanel.setAttribute('animation__p', {property: 'position', x: transcrP[scaleState].x, z: transcrP[scaleState].z, dur: 500});
+            translPanel.setAttribute('animation__p', {property: 'position', x: translP[scaleState].x, z: translP[scaleState].z, dur: 500});
+            infoPanel.setAttribute('animation__p', {property: 'position', x: infoP[scaleState].x, z: infoP[scaleState].z, dur: 500});
+            btnGroup.setAttribute('animation__p', {property: 'position', x: btnP[scaleState].x, z: btnP[scaleState].z, dur: 500});
+          });
+
+          document.querySelector('#zoom-button').addEventListener('click', () => { playClick(); zoomed = !zoomed; wrapper.setAttribute('animation', {property: 'position', to: zoomed ? '0 1.5 -0.8' : '0 1.1 -1.5', dur: 800}); });
+          document.querySelector('#mat-button').addEventListener('click', () => { playClick(); materialityMode = !materialityMode; folio.setAttribute('material', {metalness: materialityMode ? 0.9 : 0.1, roughness: materialityMode ? 0.1 : 0.8}); });
+          document.querySelector('#mute-button').addEventListener('click', () => {
+            playClick();
+            isMuted = !isMuted;
+            if (isMuted) { ambientSound.components.sound.pauseSound(); muteLabel.setAttribute('value', 'UNMUTE'); } 
+            else { ambientSound.components.sound.playSound(); muteLabel.setAttribute('value', 'MUTE'); }
+          });
+
+          window.addEventListener('click', () => { if (ambientSound.components.sound) ambientSound.components.sound.playSound(); document.querySelector('#sound-ui').setAttribute('visible', 'false'); }, { once: true });
+        }
+      });
+    </script>
+  </head>
+
+  <body>
+    <a-scene scriptorium-logic renderer="antialias: true; colorManagement: true;">
+      <a-assets>
+        <img id="manuscript1" src="folio.jpg">
+        <img id="manuscript2" src="folio2.jpg">
+        <audio id="music-track" src="chant.mp3" preload="auto"></audio>
+        <audio id="click-asset" src="click.mp3" preload="auto"></audio>
+      </a-assets>
+
+      <a-entity environment="preset: starry; lighting: none;"></a-entity>
+      <a-entity light="type: ambient; intensity: 0.5;"></a-entity>
+      <a-entity id="ambient-sound" sound="src: #music-track; loop: true; volume: 0.4;"></a-entity>
+      <a-entity id="click-sound-el" sound="src: #click-asset; volume: 0.4; poolSize: 5;"></a-entity>
+      <a-text id="sound-ui" value="CLICK TO START" position="0 2.2 -2" align="center" color="#FFD700" width="4"></a-text>
+
+      <a-entity id="manuscript-wrapper" position="0 1.1 -1.5" rotation="-15 0 0">
+          
+          <a-plane id="folio-object" class="clickable" drag-rotate src="#manuscript1" width="1.2" height="0.85">
+              <a-entity light="type: point; color: #ffcc77; intensity: 2; distance: 5;" position="0 0.5 0.5"></a-entity>
+              
+              <a-entity id="button-group" position="0.75 0 0.05" rotation="0 -25 0">
+                <a-sphere id="zoom-button" class="clickable" position="0 0.3 0" radius="0.04" color="#FFD700"><a-text value="ZOOM" position="0.07 0 0" scale="0.25 0.25 0.25"></a-text></a-sphere>
+                <a-sphere id="mat-button" class="clickable" position="0 0.15 0" radius="0.04" color="#C0C0C0"><a-text value="MATERIAL" position="0.07 0 0" scale="0.25 0.25 0.25"></a-text></a-sphere>
+                <a-sphere id="swap-button" class="clickable" position="0 0 0" radius="0.04" color="#cd7f32"><a-text value="SWAP PAGE" position="0.07 0 0" scale="0.25 0.25 0.25"></a-text></a-sphere>
+                <a-sphere id="scale-button" class="clickable" position="0 -0.15 0" radius="0.04" color="#4CC3D9"><a-text value="SCALE" position="0.07 0 0" scale="0.25 0.25 0.25"></a-text></a-sphere>
+                <a-box id="mute-button" class="clickable" position="0 -0.3 0" width="0.06" height="0.06" depth="0.06" color="#FF4500"><a-text id="mute-label" value="MUTE" position="0.07 0 0" scale="0.25 0.25 0.25"></a-text></a-box>
+            </a-entity>
+          </a-plane>
+
+          <a-entity id="transcription-panel" class="clickable" position="-2.3 0 1.8" rotation="0 90 0">
+              <a-plane width="1.1" height="2.2" color="#111" opacity="0.9"></a-plane>
+              <a-text value="LATIN TRANSCRIPTION" color="#FFD700" align="center" width="1" position="0 0.95 0.02"></a-text>
+              <a-text id="transcr-text" color="#FFFFFF" align="left" width="1" position="-0.5 0 0.02" wrap-count="32"></a-text>
+          </a-entity>
+
+          <a-entity id="translation-panel" class="clickable" position="-1.5 0 0.8" rotation="0 55 0">
+              <a-plane width="1.1" height="2.2" color="#111" opacity="0.9"></a-plane>
+              <a-text value="ENGLISH TRANSLATION" color="#FFD700" align="center" width="1" position="0 0.95 0.02"></a-text>
+              <a-text id="transl-text" color="#FFFFFF" align="left" width="1" position="-0.5 0 0.02" wrap-count="32"></a-text>
+          </a-entity>
+
+          <a-entity id="info-panel" class="clickable" position="-0.9 0 0.1" rotation="0 20 0">
+              <a-plane width="1.1" height="1.0" color="#111" opacity="0.9"></a-plane>
+              <a-text id="info-text" color="#FFD700" align="center" width="1" position="0 0 0.02"></a-text>
+          </a-entity>
+
+      </a-entity>
+
+      <a-entity camera look-controls wasd-controls position="0 1.6 0">
+        <a-cursor position="0 0 -0.7" raycaster="objects: .clickable" color="#FFD700" 
+                  fuse="true" fuse-timeout="1500"
+                  animation__fusing="property: scale; from: 1 1 1; to: 0.1 0.1 0.1; dur: 1500; startEvents: fusing;"
+                  animation__reset="property: scale; to: 1 1 1; dur: 100; startEvents: mouseleave;">
+        </a-cursor>
+      </a-entity>
+
+    </a-scene>
+  </body>
+</html>
+
+On Mon, 23 Mar 2026, 13:50 James Gallacher, <james.gallacher94@gmail.com> wrote:
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
     <title>Medieval Scriptorium - Final Verified Layout</title>
     <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
     <script src="https://unpkg.com/aframe-environment-component@1.3.2/dist/aframe-environment-component.min.js"></script>
