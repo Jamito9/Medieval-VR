@@ -14,8 +14,276 @@
        */
       const HOME_ROTATION = { x: 15, y: 0, z: 0 };
       const HOME_POSITION = { x: 0, y: 1.1, z: -1.4 };
-      const ZOOM_POSITION = { x: 0, y: 1.5, z: -0.6 };
+      const ZOOM_POSITION = { x: 0, y: 1.5, z: -0.6 };<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Medieval Scriptorium – 350+ Line Master Stability Build</title>
+    
+    <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
+    <script src="https://unpkg.com/aframe-environment-component@1.3.2/dist/aframe-environment-component.min.js"></script>
 
+    <script>
+      /**
+       * COMPONENT: PLAY-CLICK
+       * ---------------------
+       * Triggers the UI click sound asset. 
+       * Uses stopSound() to ensure the sound retriggers even during rapid clicks.
+       */
+      AFRAME.registerComponent('play-click', {
+        init: function () {
+          this.el.addEventListener('click', () => {
+            const clickSfx = document.querySelector('#click-sfx');
+            if (clickSfx && clickSfx.components.sound) {
+              clickSfx.components.sound.stopSound();
+              clickSfx.components.sound.playSound();
+            }
+          });
+        }
+      });
+
+      /**
+       * COMPONENT: LOOK-AT-USER
+       * -----------------------
+       * Logic to ensure that the large text panels on the periphery 
+       * are always rotated to face the user's camera.
+       */
+      AFRAME.registerComponent('look-at-user', {
+        tick: function () {
+          const cameraEl = this.el.sceneEl.camera ? this.el.sceneEl.camera.el : null;
+          if (!cameraEl) return;
+
+          const targetPosition = new THREE.Vector3();
+          cameraEl.object3D.getWorldPosition(targetPosition);
+          
+          // Force the entity to face the camera's world position
+          this.el.object3D.lookAt(targetPosition.x, targetPosition.y, targetPosition.z);
+        }
+      });
+
+      /**
+       * COMPONENT: DRAG-ROTATE (THE FIXED POINT)
+       * ----------------------------------------
+       * This component manages the folio's rotation. 
+       * It is programmed to only influence the object when the mouse is down.
+       */
+      AFRAME.registerComponent('drag-rotate', {
+        init: function () {
+          this.ifMouseDown = false;
+          
+          // Input Listeners
+          this.el.addEventListener('mousedown', () => { this.ifMouseDown = true; });
+          window.addEventListener('mouseup', () => { this.ifMouseDown = false; });
+          
+          window.addEventListener('mousemove', (event) => {
+            if (this.ifMouseDown) {
+              let rotation = this.el.getAttribute('rotation');
+              
+              // Delta movement calculation
+              let sensitivity = 0.15;
+              let dX = (event.movementX || 0) * sensitivity;
+              let dY = (event.movementY || 0) * sensitivity;
+
+              this.el.setAttribute('rotation', {
+                x: rotation.x + dY,
+                y: rotation.y + dX,
+                z: 0
+              });
+            }
+          });
+        }
+      });
+
+      /**
+       * COMPONENT: SCRIPTORIUM-LOGIC
+       * ----------------------------
+       * The central state machine. Handles text content, zoom levels, 
+       * and the red-to-dark-red mute button logic.
+       */
+      AFRAME.registerComponent('scriptorium-logic', {
+        init: function () {
+          // Internal States
+          this.isZoomed = false;
+          this.isMuted = false;
+          this.currentPageNum = 1;
+
+          // Element Selectors
+          this.folio = document.querySelector('#folio-object');
+          this.anchor = document.querySelector('#zoom-anchor');
+          this.muteBtn = document.querySelector('#mute-button');
+          this.bgm = document.querySelector('#ambient-sound');
+
+          // Historical Manuscript Data
+          this.latText1 = "De Scocia\n\nScocia est insule in quo est anglia suprema portio et in aquilone versa. Flumibus haud magnis et monte quodam ab anglia discreta. Hic nos brunali tempore fuimus cum sol paulo amplius quam tris horis terram illusiaret. Jacobus eo tempore regnabat quadratus et multo abdomine grauis. qui cum olim in anglia captus . xi . annis in custodia fuisset. ac dimissus tandem suscepta ex anglica coniuge domum reuersus plures regulos gladio percussisset. et ipse tandem a suis domesticis interfectus est. Inter quos vltione pacata filius eius regnum suscepit. Audiueramus nos olim arborem esse in scocia quae supra ripas fluminis enata fructus produceret anetarum formam habentes... Id genus lapidis siue sulphurea siue alia pingues materia praeditum pro ligno quo regio nuda est comburitur.";
+          this.engText1 = "Concerning Scotland\n\nScotland is of the island in which England is the upper part, and it lies toward the north. It is separated from England by rivers not large and by a certain mountain. We were here in the winter season, when the sun shone upon the earth for a little more than three hours. [King] James [IV] reigned at that time, square-built and burdened with a very large belly. He, having once been captured in England and kept in custody for eleven years, and at last released, after taking an English wife, returned home and struck down several petty rulers with the sword. And he himself was at last killed by his own household... This kind of stone, endowed with a sulphurous or other rich material, is burned in place of wood, of which the region is bare.";
+          
+          this.latText2 = "Quorum cateruis sic gloriose circumuallatus... Cui rex robertus cum paucis respectu multitudinis eius in domino confidens... cum dicto rege anglie mortale commisit bellum ac ipsum cum omni pompa sua et innumerabili potencia auxiliante altissimo cuius est victoriam dare... ubi comes glouernie et multi nobles anglie ceciderunt interfecti… alii fugati . alii capti . alii occisi… per captiuos enim non solum regina scocie cum suis liberati sunt... Ac eciam omnes alii in dicto bello existentes inestimabiliter sunt ditati.";
+          this.engText2 = "Surrounded so gloriously by his companies... he came as far as the place called Bannockburn and pitched his tents there. Against him King Robert, with only a few men... trusting in the Lord and taking strength in God... joined mortal battle with the said king of England. And him, with all his pomp and his innumerable power, the Most High assisting... he turned to flight. There the Earl of Gloucester and many nobles of England fell slain…. Others were put to flight; others were captured; others were killed.";
+
+          this.updateUI();
+
+          // ZOOM & RESET EVENT
+          document.querySelector('#zoom-button').addEventListener('click', () => {
+            this.isZoomed = !this.isZoomed;
+            
+            this.anchor.setAttribute('animation', {
+              property: 'position',
+              to: this.isZoomed ? '0 1.5 -0.6' : '0 1.1 -1.4',
+              dur: 850,
+              easing: 'easeInOutCubic'
+            });
+
+            // Fixed point: Reset folio to exactly 15 degrees when resetting zoom
+            if (!this.isZoomed) {
+              this.folio.setAttribute('rotation', '15 0 0');
+            }
+          });
+
+          // SWAP PAGE EVENT
+          document.querySelector('#swap-button').addEventListener('click', () => {
+            this.currentPageNum = (this.currentPageNum === 1) ? 2 : 1;
+            this.folio.setAttribute('src', this.currentPageNum === 1 ? '#manuscript-img-1' : '#manuscript-img-2');
+            this.updateUI();
+          });
+
+          // MUTE EVENT (Bright Red #FF0000 -> Dark Red #8B0000)
+          this.muteBtn.addEventListener('click', () => {
+            this.isMuted = !this.isMuted;
+            
+            if (this.bgm.components.sound) {
+              if (this.isMuted) {
+                this.bgm.components.sound.pauseSound();
+              } else {
+                this.bgm.components.sound.playSound();
+              }
+            }
+
+            // Visual feedback for the mute state
+            this.muteBtn.setAttribute('color', this.isMuted ? '#8B0000' : '#FF0000');
+            document.querySelector('#mute-label-text').setAttribute('value', this.isMuted ? 'UNMUTE' : 'MUTE');
+          });
+
+          // Interaction unlock for audio context
+          window.addEventListener('click', () => { 
+            if (this.bgm.components.sound) {
+              this.bgm.components.sound.playSound(); 
+            }
+            document.querySelector('#audio-start-hint').setAttribute('visible', 'false'); 
+          }, { once: true });
+        },
+
+        updateUI: function() {
+          const p1 = (this.currentPageNum === 1);
+          
+          // Update massive side panels
+          document.querySelector('#transcription-text-entity').setAttribute('value', p1 ? this.latText1 : this.latText2);
+          document.querySelector('#translation-text-entity').setAttribute('value', p1 ? this.engText1 : this.engText2);
+          
+          // Update small info panel
+          const infoStr = p1 ? 'Liber Chronicarum, 1493\nSchedel' : 'Liber Pluscardensis, c.1500';
+          document.querySelector('#info-label-text').setAttribute('value', infoStr);
+        }
+      });
+    </script>
+  </head>
+
+  <body>
+    <a-scene scriptorium-logic renderer="antialias: true; colorManagement: true;">
+      
+      <a-assets>
+        <img id="manuscript-img-1" src="folio.jpg">
+        <img id="manuscript-img-2" src="folio2.jpg">
+        <audio id="bgm-track" src="chant.mp3" preload="auto"></audio>
+        <audio id="click-track" src="https://cdn.aframe.io/360-video-example/click.mp3" preload="auto"></audio>
+      </a-assets>
+
+      <a-entity id="ambient-sound" sound="src: #bgm-track; loop: true; volume: 0.5;"></a-entity>
+      <a-entity id="click-sfx" sound="src: #click-track; volume: 0.8; poolSize: 12;"></a-entity>
+
+      <a-entity environment="preset: starry; lighting: none;"></a-entity>
+      <a-entity light="type: ambient; intensity: 0.45;"></a-entity>
+      
+      <a-text id="audio-start-hint" value="CLICK TO START" position="0 2.2 -2.2" align="center" color="#FFD700" width="3.5"></a-text>
+
+      <a-entity id="camera-rig">
+        <a-entity camera look-controls wasd-controls position="0 1.6 0">
+          <a-cursor id="main-cursor" position="0 0 -0.45" scale="0.45 0.45 0.45" raycaster="objects: .clickable" color="#FFD700"></a-cursor>
+        </a-entity>
+      </a-entity>
+
+      <a-entity id="zoom-anchor" position="0 1.1 -1.4">
+          
+          <a-plane 
+            id="folio-object" 
+            class="clickable" 
+            drag-rotate 
+            src="#manuscript-img-1"
+            position="0 0 0" 
+            rotation="15 0 0" 
+            width="1.1" 
+            height="0.8"
+            material="shader: standard; metalness: 0.1; roughness: 0.8; side: double;">
+              
+              <a-entity light="type: point; color: #ffcc77; intensity: 1.7; distance: 4.5;" position="0 0.5 0.5"></a-entity>
+          </a-plane>
+
+          <a-entity id="ui-cluster" position="1.0 0 0.15" rotation="0 -28 0">
+              
+              <a-sphere id="zoom-button" class="clickable" play-click position="0 0.28 0" radius="0.05" color="#FFD700">
+                <a-text value="ZOOM/RESET" position="0.12 0 0" width="2.2" color="white"></a-text>
+              </a-sphere>
+
+              <a-sphere id="swap-button" class="clickable" play-click position="0 0.12 0" radius="0.05" color="#cd7f32">
+                <a-text value="SWAP PAGE" position="0.12 0 0" width="2.2" color="white"></a-text>
+              </a-sphere>
+
+              <a-box id="mute-button" class="clickable" play-click position="0 -0.1 0" width="0.08" height="0.08" depth="0.08" color="#FF0000">
+                  <a-text id="mute-label-text" value="MUTE" position="0.15 0 0" width="2.2" color="white"></a-text>
+              </a-box>
+
+          </a-entity>
+
+          <a-entity id="info-cluster" position="-1.05 0 0.15" rotation="0 28 0">
+              <a-plane width="0.95" height="0.45" color="#111" opacity="0.92">
+                <a-text id="info-label-text" value="Manuscript Info" align="center" width="0.85" position="0 0 0.02"></a-text>
+              </a-plane>
+          </a-entity>
+
+      </a-entity>
+
+      <a-entity id="english-hud" position="-1.95 1.5 -0.85" look-at-user>
+          <a-plane width="1.55" height="3.8" color="#000" opacity="0.92" material="side: double;"></a-plane>
+          <a-text value="ENGLISH TRANSLATION" color="#FFD700" align="center" width="2.5" position="0 1.7 0.03"></a-text>
+          <a-text 
+            id="translation-text-entity" 
+            color="white" 
+            align="left" 
+            anchor="center"
+            baseline="top"
+            width="1.4" 
+            position="0 1.5 0.04" 
+            wrap-count="45">
+          </a-text>
+      </a-entity>
+
+      <a-entity id="latin-hud" position="-3.4 1.5 0.7" look-at-user>
+          <a-plane width="1.55" height="3.8" color="#000" opacity="0.92" material="side: double;"></a-plane>
+          <a-text value="LATIN TRANSCRIPTION" color="#FFD700" align="center" width="2.5" position="0 1.7 0.03"></a-text>
+          <a-text 
+            id="transcription-text-entity" 
+            color="white" 
+            align="left" 
+            anchor="center" 
+            baseline="top"
+            width="1.4" 
+            position="0 1.5 0.04" 
+            wrap-count="45">
+          </a-text>
+      </a-entity>
+
+    </a-scene>
+  </body>
+</html>
       /**
        * COMPONENT: PLAY-CLICK
        * Manages the tactile audio feedback for all UI elements.
