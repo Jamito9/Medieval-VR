@@ -2,155 +2,62 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <title>Medieval Scriptorium – Refined Cockpit Build</title>
+    <title>Medieval Scriptorium – Verified Master Build</title>
     
     <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
-    
     <script src="https://unpkg.com/aframe-environment-component@1.3.2/dist/aframe-environment-component.min.js"></script>
 
     <script>
       /**
-       * ============================================================
-       * COMPONENT: CLICK HANDLER (SOUND)
-       * ============================================================
-       * Ensures that every interaction produces an audible click.
+       * CONSTANTS & GLOBALS
+       * Centralized values for easy adjustment.
        */
-      AFRAME.registerComponent('click-handler', {
+      const HOME_ROTATION = { x: 15, y: 0, z: 0 };
+      const HOME_POSITION = { x: 0, y: 1.1, z: -1.4 };
+      const ZOOM_POSITION = { x: 0, y: 1.5, z: -0.6 };
+
+      /**
+       * COMPONENT: PLAY-CLICK
+       * Manages the tactile audio feedback for all UI elements.
+       */
+      AFRAME.registerComponent('play-click', {
         init: function () {
           this.el.addEventListener('click', () => {
-            const clickSound = document.querySelector('#click-sfx');
-            if (clickSound && clickSound.components.sound) {
-              clickSound.components.sound.stopSound();
-              clickSound.components.sound.playSound();
+            const sfx = document.querySelector('#click-sfx');
+            if (sfx && sfx.components.sound) {
+              sfx.components.sound.stopSound();
+              sfx.components.sound.playSound();
             }
           });
         }
       });
 
       /**
-       * ============================================================
-       * COMPONENT: LOOK AT USER
-       * ============================================================
-       * Dynamic billboarding for HUD panels.
+       * COMPONENT: LOOK-AT-USER
+       * Ensures cockpit panels are always facing the user's headset.
        */
       AFRAME.registerComponent('look-at-user', {
         tick: function () {
-          const sceneEl = this.el.sceneEl;
-          const cameraEl = sceneEl.camera ? sceneEl.camera.el : null;
-          
+          const cameraEl = this.el.sceneEl.camera ? this.el.sceneEl.camera.el : null;
           if (!cameraEl) return;
 
           const targetPos = new THREE.Vector3();
           cameraEl.object3D.getWorldPosition(targetPos);
-
-          this.el.object3D.lookAt(
-            targetPos.x, 
-            targetPos.y, 
-            targetPos.z
-          );
+          this.el.object3D.lookAt(targetPos.x, targetPos.y, targetPos.z);
         }
       });
 
       /**
-       * ============================================================
-       * COMPONENT: VR GRAB ROTATION
-       * ============================================================
-       * Controller-based interaction logic for VR users.
-       * Logic is purely reactive: No movement occurs without user input.
-       */
-      AFRAME.registerComponent('vr-grab-rotate', {
-        init: function () {
-          this.grabbing = false;
-
-          this.el.sceneEl.addEventListener('enter-vr', () => {
-            this.isVR = true;
-            const cursor = document.querySelector('#cursor');
-            if (cursor) cursor.setAttribute('visible', false);
-          });
-
-          this.el.sceneEl.addEventListener('exit-vr', () => {
-            this.isVR = false;
-            const cursor = document.querySelector('#cursor');
-            if (cursor) cursor.setAttribute('visible', true);
-          });
-
-          this.el.addEventListener('mousedown', () => {
-            if (this.isVR) this.grabbing = true;
-          });
-
-          window.addEventListener('mouseup', () => {
-            this.grabbing = false;
-          });
-        },
-
-        tick: function () {
-          if (!this.grabbing) return;
-          
-          let rot = this.el.getAttribute('rotation');
-          this.el.setAttribute('rotation', {
-            x: Math.max(-80, Math.min(80, rot.x)),
-            y: rot.y + 0.35,
-            z: 0
-          });
-        }
-      });
-
-      /**
-       * ============================================================
-       * COMPONENT: PAGE CORNER TRIGGERS
-       * ============================================================
-       * Injects invisible clickable zones for page turning.
-       */
-      AFRAME.registerComponent('page-corners', {
-        init: function () {
-          const folio = this.el;
-
-          // Left Zone
-          this.leftCorner = document.createElement('a-plane');
-          this.leftCorner.setAttribute('position', '-0.5 -0.35 0.02');
-          this.leftCorner.setAttribute('width', '0.25');
-          this.leftCorner.setAttribute('height', '0.25');
-          this.leftCorner.setAttribute('material', 'opacity: 0; transparent: true');
-          this.leftCorner.classList.add('clickable');
-          this.leftCorner.setAttribute('click-handler', '');
-
-          // Right Zone
-          this.rightCorner = document.createElement('a-plane');
-          this.rightCorner.setAttribute('position', '0.5 -0.35 0.02');
-          this.rightCorner.setAttribute('width', '0.25');
-          this.rightCorner.setAttribute('height', '0.25');
-          this.rightCorner.setAttribute('material', 'opacity: 0; transparent: true');
-          this.rightCorner.classList.add('clickable');
-          this.rightCorner.setAttribute('click-handler', '');
-
-          folio.appendChild(this.leftCorner);
-          folio.appendChild(this.rightCorner);
-
-          const triggerFlip = () => {
-            const swapBtn = document.querySelector('#swap-button');
-            if (swapBtn) swapBtn.click();
-          };
-
-          this.leftCorner.addEventListener('click', triggerFlip);
-          this.rightCorner.addEventListener('click', triggerFlip);
-        }
-      });
-
-      /**
-       * ============================================================
-       * COMPONENT: DRAG ROTATE
-       * ============================================================
-       * Relative movement tracking for desktop users.
-       * Explicitly prevents folio drift when not dragging.
+       * COMPONENT: DRAG-ROTATE
+       * Enables desktop mouse interaction. 
+       * Folio remains static unless 'mousedown' is active.
        */
       AFRAME.registerComponent('drag-rotate', {
         init: function () {
           this.ifMouseDown = false;
-          
           this.el.addEventListener('mousedown', () => { 
             this.ifMouseDown = true; 
           });
-          
           window.addEventListener('mouseup', () => { 
             this.ifMouseDown = false; 
           });
@@ -158,11 +65,11 @@
           window.addEventListener('mousemove', (e) => {
             if (this.ifMouseDown) {
               let rotation = this.el.getAttribute('rotation');
-              let deltaX = (e.movementX || 0) * 0.15;
-              let deltaY = (e.movementY || 0) * 0.15;
+              let deltaX = (e.movementX || 0) * 0.12;
+              let deltaY = (e.movementY || 0) * 0.12;
 
               this.el.setAttribute('rotation', {
-                x: Math.max(-80, Math.min(80, rotation.x + deltaY)),
+                x: rotation.x + deltaY,
                 y: rotation.y + deltaX,
                 z: 0
               });
@@ -172,125 +79,146 @@
       });
 
       /**
-       * ============================================================
-       * COMPONENT: CANDLE FLICKER
-       * ============================================================
-       * Modulates point light intensity for atmospheric realism.
+       * COMPONENT: VR-GRAB-ROTATE
+       * Specialized logic for 6DoF VR controllers.
+       */
+      AFRAME.registerComponent('vr-grab-rotate', {
+        init: function () {
+          this.grabbing = false;
+          this.el.addEventListener('mousedown', () => { 
+            this.grabbing = true; 
+          });
+          window.addEventListener('mouseup', () => { 
+            this.grabbing = false; 
+          });
+        },
+        tick: function () {
+          if (!this.grabbing) return;
+          let rot = this.el.getAttribute('rotation');
+          this.el.setAttribute('rotation', {
+            x: rot.x,
+            y: rot.y + 0.5,
+            z: 0
+          });
+        }
+      });
+
+      /**
+       * COMPONENT: PAGE-CORNERS
+       * Injects invisible hitboxes for page flipping on the book itself.
+       */
+      AFRAME.registerComponent('page-corners', {
+        init: function () {
+          const createTrigger = (pos) => {
+            let p = document.createElement('a-plane');
+            p.setAttribute('position', pos);
+            p.setAttribute('width', '0.35');
+            p.setAttribute('height', '0.35');
+            p.setAttribute('material', 'opacity: 0; transparent: true');
+            p.classList.add('clickable');
+            p.setAttribute('play-click', '');
+            p.addEventListener('click', () => {
+              document.querySelector('#swap-button').click();
+            });
+            return p;
+          };
+          // Bottom-Left and Bottom-Right targets
+          this.el.appendChild(createTrigger('-0.4 -0.3 0.03'));
+          this.el.appendChild(createTrigger('0.4 -0.3 0.03'));
+        }
+      });
+
+      /**
+       * COMPONENT: FLICKER
+       * Atmospheric light modulation for the candle.
        */
       AFRAME.registerComponent('flicker', {
         tick: function () {
-          if (Math.random() > 0.8) {
-            const intensity = 1.0 + (Math.random() * 0.6);
-            this.el.setAttribute('light', 'intensity', intensity);
+          if (Math.random() > 0.85) {
+            const val = 1.2 + (Math.random() * 0.5);
+            this.el.setAttribute('light', 'intensity', val);
           }
         }
       });
 
       /**
-       * ============================================================
-       * COMPONENT: SCRIPTORIUM LOGIC
-       * ============================================================
-       * Master state controller for assets and UI.
+       * COMPONENT: SCRIPTORIUM-LOGIC
+       * Master State Controller.
        */
       AFRAME.registerComponent('scriptorium-logic', {
         init: function () {
-          // Internal State
           this.zoomed = false; 
-          this.materialityMode = false;
           this.currentPage = 1; 
           this.isMuted = false;
 
-          // DOM Bindings
+          // Elements
           this.folio = document.querySelector('#folio-object');
-          this.zoomAnchor = document.querySelector('#zoom-anchor');
-          this.soundEl = document.querySelector('#ambient-sound');
-          this.transcrText = document.querySelector('#transcr-text');
-          this.translText = document.querySelector('#transl-text');
-          this.muteBtn = document.querySelector('#mute-button');
-          this.muteLabel = document.querySelector('#mute-label');
-          this.hoverTooltip = document.querySelector('#hover-tooltip');
-
-          // Data Arrays
+          this.anchor = document.querySelector('#zoom-anchor');
+          this.ambient = document.querySelector('#ambient-sound');
+          
+          // Historical Text Strings
           this.lat1 = "De Scocia\n\nScocia est insule in quo est anglia suprema portio et in aquilone versa. Flumibus haud magnis et monte quodam ab anglia discreta. Hic nos brunali tempore fuimus cum sol paulo amplius quam tris horis terram illusiaret. Jacobus eo tempore regnabat quadratus et multo abdomine grauis. qui cum olim in anglia captus . xi . annis in custodia fuisset. ac dimissus tandem suscepta ex anglica coniuge domum reuersus plures regulos gladio percussisset. et ipse tandem a suis domesticis interfectus est. Inter quos vltione pacata filius eius regnum suscepit. Audiueramus nos olim arborem esse in scocia quae supra ripas fluminis enata fructus produceret anetarum formam habentes... Id genus lapidis siue sulphurea siue alia pingues materia praeditum pro ligno quo regio nuda est comburitur.";
           this.eng1 = "Concerning Scotland\n\nScotland is of the island in which England is the upper part, and it lies toward the north. It is separated from England by rivers not large and by a certain mountain. We were here in the winter season, when the sun shone upon the earth for a little more than three hours. [King] James [IV] reigned at that time, square-built and burdened with a very large belly. He, having once been captured in England and kept in custody for eleven years, and at last released, after taking an English wife, returned home and struck down several petty rulers with the sword. And he himself was at last killed by his own household... This kind of stone, endowed with a sulphurous or other rich material, is burned in place of wood, of which the region is bare.";
           
           this.lat2 = "Quorum cateruis sic gloriose circumuallatus... Cui rex robertus cum paucis respectu multitudinis eius in domino confidens... cum dicto rege anglie mortale commisit bellum ac ipsum cum omni pompa sua et innumerabili potencia auxiliante altissimo cuius est victoriam dare... ubi comes glouernie et multi nobiles anglie ceciderunt interfecti… alii fugati . alii capti . alii occisi… per captiuos enim non solum regina scocie cum suis liberati sunt... Ac eciam omnes alii in dicto bello existentes inestimabiliter sunt ditati.";
           this.eng2 = "Surrounded so gloriously by his companies... he came as far as the place called Bannockburn and pitched his tents there. Against him King Robert, with only a few men... trusting in the Lord and taking strength in God... joined mortal battle with the said king of England. And him, with all his pomp and his innumerable power, the Most High assisting... he turned to flight. There the Earl of Gloucester and many nobles of England fell slain…. Others were put to flight; others were captured; others were killed.";
 
-          this.updateContent();
+          this.refreshUI();
 
-          // Tooltip Events
-          this.folio.addEventListener('mouseenter', () => {
-            this.hoverTooltip.setAttribute('visible', 'true');
-          });
-          this.folio.addEventListener('mouseleave', () => {
-            this.hoverTooltip.setAttribute('visible', 'false');
-          });
-
-          // ZOOM Action
+          // Button: ZOOM/RESET
           document.querySelector('#zoom-button').addEventListener('click', () => {
             this.zoomed = !this.zoomed;
-            this.zoomAnchor.setAttribute('animation', {
+            
+            // Move the anchor
+            this.anchor.setAttribute('animation', {
               property: 'position', 
-              to: this.zoomed ? '0 1.5 -0.6' : '0 1.1 -1.4', 
-              dur: 800,
-              easing: 'easeInOutQuad'
+              to: this.zoomed ? ZOOM_POSITION : HOME_POSITION, 
+              dur: 1000,
+              easing: 'easeInOutCubic'
             });
+
+            // If Resetting, also snap the Folio back to 15 degrees
+            if (!this.zoomed) {
+              this.folio.setAttribute('rotation', HOME_ROTATION);
+            }
           });
 
-          // MATERIAL Action
-          document.querySelector('#mat-button').addEventListener('click', () => {
-            this.materialityMode = !this.materialityMode;
-            this.folio.setAttribute('material', { 
-              metalness: this.materialityMode ? 0.9 : 0.1, 
-              roughness: this.materialityMode ? 0.1 : 0.8 
-            });
-          });
-
-          // SWAP Action
+          // Button: SWAP
           document.querySelector('#swap-button').addEventListener('click', () => {
             this.currentPage = (this.currentPage === 1) ? 2 : 1;
             this.folio.setAttribute('src', this.currentPage === 1 ? '#manuscript1' : '#manuscript2');
-            this.updateContent();
+            this.refreshUI();
           });
 
-          // SCALE Action
-          document.querySelector('#scale-button').addEventListener('click', () => {
-            let s = this.folio.getAttribute('scale');
-            let next = s.x > 1.3 ? "0.7 0.7 0.7" : (s.x < 0.8 ? "1 1 1" : "1.5 1.5 1.5");
-            this.folio.setAttribute('scale', next);
-          });
-
-          // MUTE Action (Corrected Coloring: Red to Dark Red)
-          this.muteBtn.addEventListener('click', () => {
+          // Button: MUTE (Bright Red to Dark Red)
+          document.querySelector('#mute-button').addEventListener('click', (e) => {
             this.isMuted = !this.isMuted;
-            if (this.soundEl.components.sound) {
-              if (this.isMuted) {
-                this.soundEl.components.sound.pauseSound();
-              } else {
-                this.soundEl.components.sound.playSound();
-              }
+            if (this.ambient.components.sound) {
+              this.isMuted ? this.ambient.components.sound.pauseSound() : this.ambient.components.sound.playSound();
             }
-            // Active playing = Bright Red (#FF0000), Muted = Dark Red (#8B0000)
-            this.muteBtn.setAttribute('color', this.isMuted ? '#8B0000' : '#FF0000'); 
-            this.muteLabel.setAttribute('value', this.isMuted ? 'UNMUTE' : 'MUTE');
+            // Logic Check: Unmuted = Bright Red (#FF0000), Muted = Dark Red (#8B0000)
+            const colorVal = this.isMuted ? '#8B0000' : '#FF0000';
+            e.target.setAttribute('color', colorVal);
+            document.querySelector('#mute-label').setAttribute('value', this.isMuted ? 'UNMUTE' : 'MUTE');
           });
 
-          // Global Initialization
+          // Handle first-click audio unlock
           window.addEventListener('click', () => { 
-            if (this.soundEl.components.sound) {
-              this.soundEl.components.sound.playSound(); 
+            if (this.ambient.components.sound) {
+              this.ambient.components.sound.playSound(); 
             }
             document.querySelector('#sound-ui').setAttribute('visible', 'false'); 
           }, { once: true });
         },
 
-        updateContent: function() {
+        refreshUI: function() {
           const isP1 = (this.currentPage === 1);
-          this.transcrText.setAttribute('value', isP1 ? this.lat1 : this.lat2);
-          this.translText.setAttribute('value', isP1 ? this.eng1 : this.eng2);
-          document.querySelector('#hover-text').setAttribute('value', isP1 ? 'Liber Chronicarum' : 'Liber Pluscardensis');
-          document.querySelector('#info-text').setAttribute('value', isP1 ? 'Liber Chronicarum, 1493' : 'Liber Pluscardensis');
+          
+          document.querySelector('#transcr-text').setAttribute('value', isP1 ? this.lat1 : this.lat2);
+          document.querySelector('#transl-text').setAttribute('value', isP1 ? this.eng1 : this.eng2);
+          
+          const info = isP1 ? 'Liber Chronicarum, 1493' : 'Liber Pluscardensis, c.1500';
+          document.querySelector('#info-text').setAttribute('value', info);
         }
       });
     </script>
@@ -299,46 +227,73 @@
   <body>
     <a-scene 
       scriptorium-logic 
-      renderer="antialias: true; colorManagement: true;">
+      renderer="antialias: true; colorManagement: true; logarithmicDepthBuffer: true;">
       
       <a-assets>
-        <img id="manuscript1" src="folio.jpg">
-        <img id="manuscript2" src="folio2.jpg">
-        <audio id="music-track" src="chant.mp3" preload="auto"></audio>
-        <audio id="click-track" src="https://cdn.aframe.io/360-video-example/click.mp3" preload="auto"></audio>
+        <img 
+          id="manuscript1" 
+          src="folio.jpg">
+        <img 
+          id="manuscript2" 
+          src="folio2.jpg">
+        <audio 
+          id="music-track" 
+          src="chant.mp3" 
+          preload="auto">
+        </audio>
+        <audio 
+          id="click-asset" 
+          src="https://cdn.aframe.io/360-video-example/click.mp3" 
+          preload="auto">
+        </audio>
       </a-assets>
 
-      <a-entity id="ambient-sound" sound="src: #music-track; loop: true; volume: 0.5;"></a-entity>
-      <a-entity id="click-sfx" sound="src: #click-track; volume: 1; poolSize: 5;"></a-entity>
+      <a-entity 
+        id="ambient-sound" 
+        sound="src: #music-track; loop: true; volume: 0.4;">
+      </a-entity>
+      
+      <a-entity 
+        id="click-sfx" 
+        sound="src: #click-asset; volume: 1.0; poolSize: 15;">
+      </a-entity>
 
-      <a-entity environment="preset: starry; lighting: none;"></a-entity>
-      <a-entity light="type: ambient; intensity: 0.4;"></a-entity>
+      <a-entity 
+        environment="preset: starry; lighting: none; ground: flat; groundColor: #050505;">
+      </a-entity>
+      
+      <a-entity 
+        light="type: ambient; intensity: 0.35;">
+      </a-entity>
       
       <a-text 
         id="sound-ui" 
-        value="CLICK TO START" 
-        position="0 2.2 -2" 
+        value="CLICK TO INITIATE EXPERIENCE" 
+        position="0 2.2 -2.5" 
         align="center" 
         color="#FFD700" 
-        width="3">
+        width="4">
       </a-text>
 
-      <a-entity id="rig" position="0 0 0">
-        <a-entity camera look-controls wasd-controls position="0 1.6 0">
+      <a-entity id="rig">
+        <a-entity 
+          camera 
+          look-controls 
+          wasd-controls 
+          position="0 1.6 0">
           <a-cursor 
             id="cursor" 
-            position="0 0 -0.4" 
-            scale="0.4 0.4 0.4" 
+            position="0 0 -0.5" 
+            scale="0.5 0.5 0.5" 
             raycaster="objects: .clickable" 
             color="#FFD700">
           </a-cursor>
         </a-entity>
-        
-        <a-entity laser-controls="hand: left" raycaster="objects: .clickable; far: 10;"></a-entity>
-        <a-entity laser-controls="hand: right" raycaster="objects: .clickable; far: 10;"></a-entity>
       </a-entity>
 
-      <a-entity id="zoom-anchor" position="0 1.1 -1.4">
+      <a-entity 
+        id="zoom-anchor" 
+        position="0 1.1 -1.4">
           
           <a-plane 
             id="folio-object" 
@@ -350,96 +305,160 @@
             position="0 0 0" 
             rotation="15 0 0" 
             width="1.1" 
-            height="0.8"
-            material="shader: standard; metalness: 0.1; roughness: 0.8; side: double;">
+            height="0.85"
+            material="shader: standard; metalness: 0.05; roughness: 0.9; side: double;">
               
               <a-entity 
                 id="candle" 
-                light="type: point; color: #ffcc77; intensity: 1.6; distance: 4;" 
-                position="0 0.5 0.5" 
+                light="type: point; color: #ffaa44; intensity: 1.7; distance: 5;" 
+                position="0 0.6 0.6" 
                 flicker>
-              </a-entity>
-
-              <a-entity id="hover-tooltip" position="0 0.55 0.05" visible="false">
-                  <a-plane width="0.8" height="0.15" color="black" opacity="0.8"></a-plane>
-                  <a-text id="hover-text" value="Liber Chronicarum" color="white" align="center" width="0.8" position="0 0 0.01"></a-text>
               </a-entity>
           </a-plane>
 
-          <a-entity id="button-group" position="0.9 0 0.1" rotation="0 -25 0">
+          <a-entity 
+            id="button-group" 
+            position="1.0 0 0.2" 
+            rotation="0 -30 0">
               
               <a-sphere 
                 id="zoom-button" 
                 class="clickable" 
-                click-handler
-                position="0 0.25 0" 
-                radius="0.04" 
+                play-click
+                position="0 0.28 0" 
+                radius="0.045" 
                 color="#FFD700">
-                <a-text value="ZOOM/RESET" position="0.08 0 0" width="1.8" color="white"></a-text>
+                <a-text 
+                  value="ZOOM/RESET" 
+                  position="0.1 0 0" 
+                  width="2.0" 
+                  color="white">
+                </a-text>
               </a-sphere>
 
-              <a-sphere id="mat-button" class="clickable" click-handler position="0 0.12 0" radius="0.04" color="#C0C0C0">
-                <a-text value="MATERIAL" position="0.08 0 0" width="1.8" color="white"></a-text>
-              </a-sphere>
-
-              <a-sphere id="swap-button" class="clickable" click-handler position="0 0 0" radius="0.04" color="#cd7f32">
-                <a-text value="SWAP" position="0.08 0 0" width="1.8" color="white"></a-text>
-              </a-sphere>
-
-              <a-sphere id="scale-button" class="clickable" click-handler position="0 -0.12 0" radius="0.04" color="#4CC3D9">
-                <a-text value="SCALE" position="0.08 0 0" width="1.8" color="white"></a-text>
+              <a-sphere 
+                id="swap-button" 
+                class="clickable" 
+                play-click 
+                position="0 0.14 0" 
+                radius="0.045" 
+                color="#cd7f32">
+                <a-text 
+                  value="SWAP PAGE" 
+                  position="0.1 0 0" 
+                  width="2.0" 
+                  color="white">
+                </a-text>
               </a-sphere>
 
               <a-box 
                 id="mute-button" 
                 class="clickable" 
-                click-handler
-                position="0 -0.25 0" 
-                width="0.06" 
-                height="0.06" 
-                depth="0.06" 
+                play-click 
+                position="0 0 0" 
+                width="0.07" 
+                height="0.07" 
+                depth="0.07" 
                 color="#FF0000">
-                <a-text id="mute-label" value="MUTE" position="0.08 0 0" width="1.8" color="white"></a-text>
+                  <a-text 
+                    id="mute-label" 
+                    value="MUTE" 
+                    position="0.1 0 0" 
+                    width="2.0" 
+                    color="white">
+                  </a-text>
               </a-box>
-
           </a-entity>
 
-          <a-entity id="info-panel" position="-0.9 0 0.1" rotation="0 35 0">
-              <a-plane width="0.6" height="0.4" color="#111" opacity="0.9"></a-plane>
-              <a-text id="info-text" value="Liber Chronicarum" color="#FFD700" align="center" width="0.7" position="0 0 0.02"></a-text>
+          <a-entity 
+            id="info-panel" 
+            position="-1.05 0 0.2" 
+            rotation="0 35 0">
+              <a-plane 
+                width="0.95" 
+                height="0.5" 
+                color="#111" 
+                opacity="0.95">
+              </a-plane>
+              <a-text 
+                id="info-text" 
+                value="Liber Chronicarum" 
+                color="#FFD700" 
+                align="center" 
+                width="0.85" 
+                position="0 0 0.03">
+              </a-text>
           </a-entity>
       </a-entity>
 
-      <a-entity id="translation-panel" position="-1.8 1.5 -0.7" look-at-user>
-          <a-plane width="1.3" height="2.4" color="#111" opacity="0.94" material="side: double;"></a-plane>
-          <a-text value="ENGLISH TRANSLATION" color="#FFD700" align="center" width="2.2" position="0 1.0 0.03"></a-text>
+      <a-entity 
+        id="translation-panel" 
+        position="-1.9 1.5 -0.8" 
+        look-at-user>
+          
+          <a-plane 
+            width="1.5" 
+            height="3.5" 
+            color="#0a0a0a" 
+            opacity="0.96" 
+            material="side: double;">
+          </a-plane>
+          
+          <a-text 
+            value="ENGLISH TRANSLATION" 
+            color="#FFD700" 
+            align="center" 
+            width="2.4" 
+            position="0 1.6 0.05">
+          </a-text>
+          
           <a-text 
             id="transl-text" 
-            color="white" 
-            align="center" 
+            color="#efefef" 
+            align="left" 
             anchor="center"
-            baseline="center"
-            width="1.2" 
-            position="0 0 0.03" 
-            wrap-count="40">
+            baseline="top"
+            width="1.3" 
+            position="0 1.3 0.05" 
+            wrap-count="42">
           </a-text>
+
       </a-entity>
 
-      <a-entity id="transcription-panel" position="-2.8 1.5 0.5" look-at-user>
-          <a-plane width="1.3" height="2.4" color="#111" opacity="0.94" material="side: double;"></a-plane>
-          <a-text value="LATIN TRANSCRIPTION" color="#FFD700" align="center" width="2.2" position="0 1.0 0.03"></a-text>
+      <a-entity 
+        id="transcription-panel" 
+        position="-3.1 1.5 0.6" 
+        look-at-user>
+          
+          <a-plane 
+            width="1.5" 
+            height="3.5" 
+            color="#0a0a0a" 
+            opacity="0.96" 
+            material="side: double;">
+          </a-plane>
+          
+          <a-text 
+            value="LATIN TRANSCRIPTION" 
+            color="#FFD700" 
+            align="center" 
+            width="2.4" 
+            position="0 1.6 0.05">
+          </a-text>
+          
           <a-text 
             id="transcr-text" 
-            color="white" 
-            align="center" 
-            anchor="center"
-            baseline="center"
-            width="1.2" 
-            position="0 0 0.03" 
-            wrap-count="40">
+            color="#efefef" 
+            align="left" 
+            anchor="center" 
+            baseline="top"
+            width="1.3" 
+            position="0 1.3 0.05" 
+            wrap-count="42">
           </a-text>
+
       </a-entity>
 
-    </a-scene>
+      </a-scene>
   </body>
 </html>
