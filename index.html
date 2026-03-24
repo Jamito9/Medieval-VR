@@ -197,6 +197,7 @@
         init: function () {
           const folio = document.querySelector('#folio-object');
           const zoomAnchor = document.querySelector('#zoom-anchor');
+          const infoPanel = document.querySelector('#info-panel');
           const soundEl = document.querySelector('#ambient-sound');
           const clickSoundEl = document.querySelector('#click-sound');
           const transcrText = document.querySelector('#transcr-text');
@@ -224,7 +225,7 @@
           const eng1 = "Concerning Scotland\n\nScotland is of the island in which England is the upper part, and it lies toward the north. It is separated from England by rivers not large and by a certain mountain. We were here in the winter season, when the sun shone upon the earth for a little more than three hours. King James IV reigned at that time, square-built and burdened with a very large belly. He, having once been captured in England and kept in custody for eleven years, and at last released, after taking an English wife, returned home and struck down several petty rulers with the sword. And he himself was at last killed by his own household. Among whom, when vengeance was pacified, his son took up the kingdom. We had heard that there was once a tree in Scotland which, growing above the banks of a river, produced fruit having the shape of ducks. When these were near to maturity, they fell either into the earth or into the water; those which fell upon the earth would rot, but those truly which were submerged in the water would soon begin to live, swim under the water, and fly into the air with feathers and wings. This kind of stone, endowed with a sulphurous or other rich material, is burned in place of wood, of which the region is bare.";
          
           // Page 2 Full Data: Liber Pluscardensis (c. 1500)
-          const lat2 = "Quorum cateruis sic gloriose circumuallatus venit usque ad locum qui dicitur Bannokburne et ibi fixit tentoria sua. Cui rex robertus cum paucis respectu multitudinis eius in domino confidens et in deo virtutem capiens cum dicto rege anglie mortale commisit bellum ac ipsum cum omni pompa sua et innumerabili potencia auxiliante altissimo cuius est victoriam dare in fugam conuertit. ubi comes glouernie et multi nobiles anglie ceciderunt interfecti. alii fugati, alii capti, alii occisi in foveis et in aqua de Bannokburne submersi. per captiuos enim non solum regina scocie cum suis liberati sunt de carcere anglorum per commutacionem nobilium anglie captorum. Ac eciam omnes alii in dicto bello existentes inestimabiliter sunt ditati.";
+          const lat2 = "Quorum cateruis sic gloriose circumuallatus venit usque ad locum qui ditur Bannokburne et ibi fixit tentoria sua. Cui rex robertus cum paucis respectu multitudinis eius in domino confidens et in deo virtutem capiens cum dicto rege anglie mortale commisit bellum ac ipsum cum omni pompa sua et innumerabili potencia auxiliante altissimo cuius est victoriam dare in fugam conuertit. ubi comes glouernie et multi nobiles anglie ceciderunt interfecti. alii fugati, alii capti, alii occisi in foveis et in aqua de Bannokburne submersi. per captiuos enim non solum regina scocie cum suis liberati sunt de carcere anglorum per commutacionem nobilium anglie captorum. Ac eciam omnes alii in dicto bello existentes inestimabiliter sunt ditati.";
           
           const eng2 = "Surrounded so gloriously by his companies, he came as far as the place called Bannockburn and pitched his tents there. Against him King Robert, with only a few men in respect to his multitude, trusting in the Lord and taking strength in God, joined mortal battle with the said king of England. And him, with all his pomp and his innumerable power, the Most High assisting, whose it is to give victory, he turned to flight. There the Earl of Gloucester and many nobles of England fell slain. Others were put to flight; others were captured; others were killed in the pits and submerged in the water of Bannockburn. For through the captives, not only was the Queen of Scotland with her people liberated from the prison of the English through the exchange of the captured English nobles, but also all others present in the said war were enriched beyond measure.";
  
@@ -240,6 +241,10 @@
           document.querySelector('#zoom-button').addEventListener('click', () => {
             playClick();
             zoomed = !zoomed;
+            
+            // OPTION 1: Auto-Hide the info panel during zoom to prevent it blocking the translation
+            infoPanel.setAttribute('visible', !zoomed);
+
             zoomAnchor.setAttribute('animation', {
               property: 'position',
               to: zoomed ? '0 1.5 -0.6' : '0 1.1 -1.4',
