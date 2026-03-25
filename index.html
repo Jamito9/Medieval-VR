@@ -48,46 +48,67 @@
        * from flipping upside down.
        * Restricted to +/- 30 degrees.
        */
+     /**
+       * COMPONENT: VR GRAB ROTATION (SPATIAL TRACKING)
+       * ---------------------------
+       * Replaces the auto-spin with 1:1 hand tracking.
+       */
       AFRAME.registerComponent('vr-grab-rotate', {
         init: function () {
           this.grabbing = false;
+          this.activeController = null; 
+          this.previousControllerPos = new THREE.Vector3();
+          this.currentControllerPos = new THREE.Vector3();
  
-          // Event listener to hide the desktop cursor when entering VR mode
           this.el.sceneEl.addEventListener('enter-vr', () => {
             this.isVR = true;
             const cursor = document.querySelector('#cursor');
             if(cursor) cursor.setAttribute('visible', false);
           });
  
-          // Show the desktop cursor again when exiting VR
           this.el.sceneEl.addEventListener('exit-vr', () => {
             this.isVR = false;
             const cursor = document.querySelector('#cursor');
             if(cursor) cursor.setAttribute('visible', true);
           });
  
-          this.el.addEventListener('mousedown', () => {
-            if (this.isVR) this.grabbing = true;
+          this.el.addEventListener('mousedown', (evt) => {
+            if (this.isVR && evt.detail.cursorEl) {
+              this.grabbing = true;
+              this.activeController = evt.detail.cursorEl;
+              this.activeController.object3D.getWorldPosition(this.previousControllerPos);
+            }
           });
  
-          window.addEventListener('mouseup', () => {
+          const stopGrabbing = () => {
             this.grabbing = false;
-          });
+            this.activeController = null;
+          };
+ 
+          this.el.addEventListener('mouseup', stopGrabbing);
+          this.el.addEventListener('mouseleave', stopGrabbing);
         },
  
         tick: function () {
-          if (!this.grabbing) return;
+          if (!this.grabbing || !this.activeController) return;
+ 
+          this.activeController.object3D.getWorldPosition(this.currentControllerPos);
+ 
+          // Calculate how much the hand moved
+          let deltaX = this.currentControllerPos.x - this.previousControllerPos.x;
+          let deltaY = this.currentControllerPos.y - this.previousControllerPos.y;
+ 
+          // 300 is the "sweet spot" for sensitivity; adjust if it feels heavy or twitchy
+          const sensitivity = 300; 
           let rot = this.el.getAttribute('rotation');
           
-          // Clamp X and Y to +/- 30
-          let nextY = Math.max(-30, Math.min(30, rot.y + 0.3)); 
-          let nextX = Math.max(-30, Math.min(30, rot.x));
+          let nextX = Math.max(-30, Math.min(30, rot.x - (deltaY * sensitivity))); 
+          let nextY = Math.max(-30, Math.min(30, rot.y + (deltaX * sensitivity)));
  
-          this.el.setAttribute('rotation', {
-            x: nextX, 
-            y: nextY,
-            z: 0
-          });
+          this.el.setAttribute('rotation', { x: nextX, y: nextY, z: 0 });
+ 
+          // Save current position for the next frame's calculation
+          this.previousControllerPos.copy(this.currentControllerPos);
         }
       });
  
