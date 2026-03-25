@@ -382,13 +382,14 @@
           </a-plane>
  
           <a-entity id="button-group" position="0.9 0 0.1" rotation="0 -25 0">
-             <a-sphere id="zoom-button" class="clickable" haptic-button position="0 0.25 0" radius="0.04" color="#FFD700">
-<a-sphere id="mat-button" class="clickable" haptic-button position="0 0.12 0" radius="0.04" color="#C0C0C0">
-<a-sphere id="swap-button" class="clickable" haptic-button position="0 0 0" radius="0.04" color="#cd7f32">
-<a-sphere id="scale-button" class="clickable" haptic-button position="0 -0.12 0" radius="0.04" color="#4CC3D9">
-<a-box id="mute-button" class="clickable" haptic-button position="0 -0.25 0" width="0.06" height="0.06" depth="0.06" color="#FF4500">
+              <a-sphere id="zoom-button" class="clickable" haptic-button position="0 0.25 0" radius="0.04" color="#FFD700"><a-text value="ZOOM/RESET" position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
+              <a-sphere id="mat-button" class="clickable" haptic-button position="0 0.12 0" radius="0.04" color="#C0C0C0"><a-text value="MATERIAL" position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
+              <a-sphere id="swap-button" class="clickable" haptic-button position="0 0 0" radius="0.04" color="#cd7f32"><a-text value="SWAP PAGE" position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
+              <a-sphere id="scale-button" class="clickable" haptic-button position="0 -0.12 0" radius="0.04" color="#4CC3D9"><a-text value="SCALE" position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
+              <a-box id="mute-button" class="clickable" haptic-button position="0 -0.25 0" width="0.06" height="0.06" depth="0.06" color="#FF4500">
                   <a-text id="mute-label" value="MUTE" position="0.08 0 0" scale="0.22 0.22 0.22" color="white"></a-text>
               </a-box>
+          </a-entity>
           </a-entity>
  
           <a-entity id="info-panel" position="-0.9 0 0.1" rotation="0 35 0">
