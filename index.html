@@ -53,30 +53,31 @@
        * ---------------------------
        * Replaces the auto-spin with 1:1 hand tracking.
        */
-      AFRAME.registerComponent('vr-grab-rotate', {
+     AFRAME.registerComponent('vr-grab-rotate', {
         init: function () {
           this.grabbing = false;
           this.activeController = null; 
           this.previousControllerPos = new THREE.Vector3();
           this.currentControllerPos = new THREE.Vector3();
  
-          this.el.sceneEl.addEventListener('enter-vr', () => {
-            this.isVR = true;
-            const cursor = document.querySelector('#cursor');
-            if(cursor) cursor.setAttribute('visible', false);
-          });
- 
-          this.el.sceneEl.addEventListener('exit-vr', () => {
-            this.isVR = false;
-            const cursor = document.querySelector('#cursor');
-            if(cursor) cursor.setAttribute('visible', true);
-          });
+          this.triggerHaptic = (intensity, duration) => {
+            if (this.activeController && this.activeController.components['tracked-controls']) {
+              const controller = this.activeController.components['tracked-controls'].controller;
+              if (controller && controller.gamepad && controller.gamepad.hapticActuators.length > 0) {
+                controller.gamepad.hapticActuators[0].pulse(intensity, duration);
+              }
+            }
+          };
+
+          this.el.sceneEl.addEventListener('enter-vr', () => { this.isVR = true; });
+          this.el.sceneEl.addEventListener('exit-vr', () => { this.isVR = false; });
  
           this.el.addEventListener('mousedown', (evt) => {
             if (this.isVR && evt.detail.cursorEl) {
               this.grabbing = true;
               this.activeController = evt.detail.cursorEl;
               this.activeController.object3D.getWorldPosition(this.previousControllerPos);
+              this.triggerHaptic(0.6, 50); // Heavy grab pulse
             }
           });
  
@@ -91,24 +92,31 @@
  
         tick: function () {
           if (!this.grabbing || !this.activeController) return;
- 
           this.activeController.object3D.getWorldPosition(this.currentControllerPos);
- 
-          // Calculate how much the hand moved
           let deltaX = this.currentControllerPos.x - this.previousControllerPos.x;
           let deltaY = this.currentControllerPos.y - this.previousControllerPos.y;
  
-          // 300 is the "sweet spot" for sensitivity; adjust if it feels heavy or twitchy
           const sensitivity = 300; 
           let rot = this.el.getAttribute('rotation');
-          
           let nextX = Math.max(-30, Math.min(30, rot.x - (deltaY * sensitivity))); 
           let nextY = Math.max(-30, Math.min(30, rot.y + (deltaX * sensitivity)));
  
           this.el.setAttribute('rotation', { x: nextX, y: nextY, z: 0 });
- 
-          // Save current position for the next frame's calculation
           this.previousControllerPos.copy(this.currentControllerPos);
+        }
+      });
+
+      AFRAME.registerComponent('haptic-button', {
+        init: function () {
+          this.el.addEventListener('mousedown', (evt) => {
+            const controller = evt.detail.cursorEl;
+            if (controller && controller.components['tracked-controls']) {
+              const gamepad = controller.components['tracked-controls'].controller.gamepad;
+              if (gamepad && gamepad.hapticActuators.length > 0) {
+                gamepad.hapticActuators[0].pulse(0.4, 30); // Sharp click pulse
+              }
+            }
+          });
         }
       });
  
