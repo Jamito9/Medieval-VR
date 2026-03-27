@@ -20,7 +20,7 @@
        * -----------------------
        * This component ensures that the information panels always rotate
        * to face the user's camera. This creates the "imaginary line"
-       * connection, ensuring the panels tilt dynamically
+       * connection you requested, ensuring the panels tilt dynamically
        * as the user moves within the VR space or looks around.
        */
 
@@ -278,7 +278,7 @@
 
           this.ifMouseDown = false;
 
-          // FIX 2: Track VR mode so drag-rotate is completely inactive in VR.
+          // Track VR mode so drag-rotate is completely inactive in VR.
           // vr-grab-rotate handles all folio interaction in VR instead.
           this.isVR = false;
 
@@ -383,16 +383,17 @@
       /**
        * COMPONENT: FOLIO HOTSPOTS
        * -------------------------
-       * Creates two independent clickable hotspot markers on the folio.
-       * The user must aim the VR laser (or desktop cursor) directly at
-       * a marker and pull the trigger to toggle its info panel open or
-       * closed. Each hotspot is fully independent. The markers are small
-       * gold circles with an 'i' glyph. Info panels appear above their
-       * respective markers so they never overlap each other.
+       * Creates two invisible info panels as children of the folio.
+       * They have NO clickable class and NO visible markers, so the
+       * laser raycaster and trigger are completely unaware of them —
+       * the folio tilt mechanic is unaffected.
        *
-       * Hotspot positions are in folio-local space (centre = 0 0).
-       * Folio dimensions: 1.1 wide x 0.8 tall.
-       * Right marker: x=0.24, Left marker: x=-0.24 (0.48 apart).
+       * Both panels are toggled together by pressing the A button
+       * (right Meta Quest 2 controller) or the X button (left controller).
+       * Pressing again closes both panels.
+       *
+       * Panels sit in folio-local space, clearly separated:
+       *   Right panel: x= 0.24  Left panel: x=-0.24  (0.48 units apart)
        */
 
       AFRAME.registerComponent('folio-hotspots', {
@@ -401,51 +402,17 @@
 
           const folio = this.el;
 
-
-          /**
-           * makeHotspot(markerPos, panelPos, labelText)
-           * Builds one clickable marker + one info panel as folio children.
-           * Click on the marker toggles its panel; nothing else does.
-           */
-
-          const makeHotspot = (markerPos, panelPos, labelText) => {
+          let open = false;
 
 
-            // --- Clickable marker: small gold circle with 'i' ---
+          // Helper: build one info panel as a folio child.
+          // No clickable class — invisible to the raycaster and trigger.
 
-            const marker = document.createElement('a-circle');
-
-            marker.setAttribute('position', markerPos);
-
-            marker.setAttribute('radius', '0.045');
-
-            marker.setAttribute('material', 'color: #FFD700; opacity: 0.95; side: double');
-
-            marker.classList.add('clickable');
-
-
-            const markerLabel = document.createElement('a-text');
-
-            markerLabel.setAttribute('value', 'i');
-
-            markerLabel.setAttribute('color', '#1a1a2e');
-
-            markerLabel.setAttribute('align', 'center');
-
-            markerLabel.setAttribute('width', '0.18');
-
-            markerLabel.setAttribute('position', '0 0 0.001');
-
-            marker.appendChild(markerLabel);
-
-            folio.appendChild(marker);
-
-
-            // --- Info panel: dark background + gold text ---
+          const makePanel = (pos, labelText) => {
 
             const panel = document.createElement('a-entity');
 
-            panel.setAttribute('position', panelPos);
+            panel.setAttribute('position', pos);
 
             panel.setAttribute('visible', 'false');
 
@@ -475,32 +442,51 @@
 
             panel.appendChild(txt);
 
+
             folio.appendChild(panel);
 
-
-            // --- Toggle: laser must point at marker and trigger pulled ---
-
-            let open = false;
-
-            marker.addEventListener('click', () => {
-
-              open = !open;
-
-              panel.setAttribute('visible', open);
-
-            });
+            return panel;
 
           };
 
 
-          // Centre-right hotspot — marker at (0.24, -0.05), panel above at (0.24, 0.17)
+          // Centre-right panel: 'Info. test one'
 
-          makeHotspot('0.24 -0.05 0.06', '0.24 0.17 0.06', 'Info. test one');
+          const panelRight = makePanel('0.24 0.05 0.06', 'Info. test one');
 
 
-          // Centre-left hotspot — marker at (-0.24, -0.05), panel above at (-0.24, 0.17)
+          // Centre-left panel: 'Info. test two'
 
-          makeHotspot('-0.24 -0.05 0.06', '-0.24 0.17 0.06', 'Info. test two');
+          const panelLeft  = makePanel('-0.24 0.05 0.06', 'Info. test two');
+
+
+          // Toggle both panels together
+
+          const toggle = () => {
+
+            open = !open;
+
+            panelRight.setAttribute('visible', open);
+
+            panelLeft.setAttribute('visible',  open);
+
+          };
+
+
+          // Bind A (right controller) and X (left controller).
+          // Only fires on button press — trigger is completely uninvolved.
+
+          this.el.sceneEl.addEventListener('loaded', () => {
+
+            const rightCtrl = document.querySelector('[laser-controls="hand: right"]');
+
+            const leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
+
+            if (rightCtrl) rightCtrl.addEventListener('abuttondown', toggle);
+
+            if (leftCtrl)  leftCtrl.addEventListener('xbuttondown',  toggle);
+
+          });
 
         }
 
@@ -538,7 +524,7 @@
 
           const hoverTooltip = document.querySelector('#hover-tooltip');
 
-          // FIX 1: Hide the desktop gaze cursor when entering VR (laser controls
+          // Hide the desktop gaze cursor when entering VR (laser controls
           // are used instead). Restore it when returning to desktop mode.
           const cursor = document.querySelector('#cursor');
 
