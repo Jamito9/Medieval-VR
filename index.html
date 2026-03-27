@@ -105,7 +105,7 @@
 
               this.activeController.object3D.getWorldPosition(this.previousControllerPos);
 
-              this.triggerHaptic(0.6, 50); // Heavy grab pulse on initial grab
+              this.triggerHaptic(0.6, 50); // Heavy grab pulse
 
             }
 
@@ -278,9 +278,18 @@
 
           this.ifMouseDown = false;
 
+          // FIX 2: Track VR mode so drag-rotate is completely inactive in VR.
+          // vr-grab-rotate handles all folio interaction in VR instead.
+          this.isVR = false;
+
+          this.el.sceneEl.addEventListener('enter-vr', () => { this.isVR = true; });
+
+          this.el.sceneEl.addEventListener('exit-vr', () => { this.isVR = false; });
+
           this.el.addEventListener('mousedown', () => {
 
-            this.ifMouseDown = true;
+            // Only activate on desktop — ignore if in VR
+            if (!this.isVR) this.ifMouseDown = true;
 
           });
 
@@ -296,13 +305,19 @@
 
               let rotation = this.el.getAttribute('rotation');
 
+              // movementX and movementY track relative motion
+
               let deltaX = (e.movementX !== undefined ? e.movementX : 0) * 0.15;
 
               let deltaY = (e.movementY !== undefined ? e.movementY : 0) * 0.15;
 
+
+              // Clamp X and Y to +/- 30 degrees
+
               let nextX = Math.max(-30, Math.min(30, rotation.x + deltaY));
 
               let nextY = Math.max(-30, Math.min(30, rotation.y + deltaX));
+
 
               this.el.setAttribute('rotation', {
 
@@ -352,11 +367,143 @@
 
             if (Math.random() > 0.8) {
 
+              // Fluctuates between 1.0 and 1.5 intensity
+
               this.el.setAttribute('light', 'intensity', 1.0 + (Math.random() * 0.5));
 
             }
 
           }
+
+        }
+
+      });
+
+
+      /**
+       * COMPONENT: FOLIO HOTSPOTS
+       * -------------------------
+       * Creates two information panels as children of the folio.
+       * Both panels are toggled together by either the A button
+       * (right Meta Quest controller) or the X button (left controller).
+       * Panels are positioned near the centre of the folio, separated
+       * left and right so they do not overlap.
+       */
+
+      AFRAME.registerComponent('folio-hotspots', {
+
+        init: function () {
+
+          const folio = this.el;
+
+          let hotspotsVisible = false;
+
+
+          // --- CENTRE-RIGHT PANEL: 'Info. test one' ---
+
+          const panelRight = document.createElement('a-entity');
+
+          panelRight.setAttribute('position', '0.22 0 0.06');
+
+          panelRight.setAttribute('visible', 'false');
+
+
+          const bgRight = document.createElement('a-plane');
+
+          bgRight.setAttribute('width', '0.3');
+
+          bgRight.setAttribute('height', '0.15');
+
+          bgRight.setAttribute('color', '#1a1a2e');
+
+          bgRight.setAttribute('opacity', '0.92');
+
+          panelRight.appendChild(bgRight);
+
+
+          const textRight = document.createElement('a-text');
+
+          textRight.setAttribute('value', 'Info. test one');
+
+          textRight.setAttribute('color', '#FFD700');
+
+          textRight.setAttribute('align', 'center');
+
+          textRight.setAttribute('width', '0.28');
+
+          textRight.setAttribute('position', '0 0 0.01');
+
+          panelRight.appendChild(textRight);
+
+          folio.appendChild(panelRight);
+
+
+          // --- CENTRE-LEFT PANEL: 'Info. test two' ---
+
+          const panelLeft = document.createElement('a-entity');
+
+          panelLeft.setAttribute('position', '-0.22 0 0.06');
+
+          panelLeft.setAttribute('visible', 'false');
+
+
+          const bgLeft = document.createElement('a-plane');
+
+          bgLeft.setAttribute('width', '0.3');
+
+          bgLeft.setAttribute('height', '0.15');
+
+          bgLeft.setAttribute('color', '#1a1a2e');
+
+          bgLeft.setAttribute('opacity', '0.92');
+
+          panelLeft.appendChild(bgLeft);
+
+
+          const textLeft = document.createElement('a-text');
+
+          textLeft.setAttribute('value', 'Info. test two');
+
+          textLeft.setAttribute('color', '#FFD700');
+
+          textLeft.setAttribute('align', 'center');
+
+          textLeft.setAttribute('width', '0.28');
+
+          textLeft.setAttribute('position', '0 0 0.01');
+
+          panelLeft.appendChild(textLeft);
+
+          folio.appendChild(panelLeft);
+
+
+          // Toggle function: both panels shown/hidden together
+
+          const toggleHotspots = () => {
+
+            hotspotsVisible = !hotspotsVisible;
+
+            panelRight.setAttribute('visible', hotspotsVisible);
+
+            panelLeft.setAttribute('visible', hotspotsVisible);
+
+          };
+
+
+          // Bind to both A (right controller) and X (left controller).
+          // Wait for scene loaded before querying controller entities.
+
+          this.el.sceneEl.addEventListener('loaded', () => {
+
+            const rightCtrl = document.querySelector('[laser-controls="hand: right"]');
+
+            const leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
+
+            if (rightCtrl) rightCtrl.addEventListener('abuttondown', toggleHotspots);
+
+            if (leftCtrl)  leftCtrl.addEventListener('xbuttondown',  toggleHotspots);
+
+          });
 
         }
 
@@ -393,6 +540,14 @@
           const muteLabel = document.querySelector('#mute-label');
 
           const hoverTooltip = document.querySelector('#hover-tooltip');
+
+          // FIX 1: Hide the desktop gaze cursor when entering VR (laser controls
+          // are used instead). Restore it when returning to desktop mode.
+          const cursor = document.querySelector('#cursor');
+
+          this.el.addEventListener('enter-vr', () => cursor.setAttribute('visible', false));
+
+          this.el.addEventListener('exit-vr',  () => cursor.setAttribute('visible', true));
 
 
           let zoomed = false;
@@ -451,6 +606,8 @@
             playClick();
 
             zoomed = !zoomed;
+
+            // Auto-Hide the info panel during zoom to prevent it blocking the translation
 
             infoPanel.setAttribute('visible', !zoomed);
 
@@ -625,7 +782,7 @@
 
       <a-entity id="zoom-anchor" position="0 1.1 -1.4">
 
-          <a-plane id="folio-object" class="clickable" drag-rotate vr-grab-rotate page-corners src="#manuscript1"
+          <a-plane id="folio-object" class="clickable" drag-rotate vr-grab-rotate page-corners folio-hotspots src="#manuscript1"
 
                    position="0 0 0" rotation="0 0 0" width="1.1" height="0.8"
 
