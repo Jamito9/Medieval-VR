@@ -20,7 +20,7 @@
        * -----------------------
        * This component ensures that the information panels always rotate
        * to face the user's camera. This creates the "imaginary line"
-       * connection you requested, ensuring the panels tilt dynamically
+       * connection, ensuring the panels tilt dynamically
        * as the user moves within the VR space or looks around.
        */
 
@@ -383,11 +383,16 @@
       /**
        * COMPONENT: FOLIO HOTSPOTS
        * -------------------------
-       * Creates two information panels as children of the folio.
-       * Both panels are toggled together by either the A button
-       * (right Meta Quest controller) or the X button (left controller).
-       * Panels are positioned near the centre of the folio, separated
-       * left and right so they do not overlap.
+       * Creates two independent clickable hotspot markers on the folio.
+       * The user must aim the VR laser (or desktop cursor) directly at
+       * a marker and pull the trigger to toggle its info panel open or
+       * closed. Each hotspot is fully independent. The markers are small
+       * gold circles with an 'i' glyph. Info panels appear above their
+       * respective markers so they never overlap each other.
+       *
+       * Hotspot positions are in folio-local space (centre = 0 0).
+       * Folio dimensions: 1.1 wide x 0.8 tall.
+       * Right marker: x=0.24, Left marker: x=-0.24 (0.48 apart).
        */
 
       AFRAME.registerComponent('folio-hotspots', {
@@ -396,114 +401,106 @@
 
           const folio = this.el;
 
-          let hotspotsVisible = false;
+
+          /**
+           * makeHotspot(markerPos, panelPos, labelText)
+           * Builds one clickable marker + one info panel as folio children.
+           * Click on the marker toggles its panel; nothing else does.
+           */
+
+          const makeHotspot = (markerPos, panelPos, labelText) => {
 
 
-          // --- CENTRE-RIGHT PANEL: 'Info. test one' ---
+            // --- Clickable marker: small gold circle with 'i' ---
 
-          const panelRight = document.createElement('a-entity');
+            const marker = document.createElement('a-circle');
 
-          panelRight.setAttribute('position', '0.22 0 0.06');
+            marker.setAttribute('position', markerPos);
 
-          panelRight.setAttribute('visible', 'false');
+            marker.setAttribute('radius', '0.045');
 
+            marker.setAttribute('material', 'color: #FFD700; opacity: 0.95; side: double');
 
-          const bgRight = document.createElement('a-plane');
-
-          bgRight.setAttribute('width', '0.3');
-
-          bgRight.setAttribute('height', '0.15');
-
-          bgRight.setAttribute('color', '#1a1a2e');
-
-          bgRight.setAttribute('opacity', '0.92');
-
-          panelRight.appendChild(bgRight);
+            marker.classList.add('clickable');
 
 
-          const textRight = document.createElement('a-text');
+            const markerLabel = document.createElement('a-text');
 
-          textRight.setAttribute('value', 'Info. test one');
+            markerLabel.setAttribute('value', 'i');
 
-          textRight.setAttribute('color', '#FFD700');
+            markerLabel.setAttribute('color', '#1a1a2e');
 
-          textRight.setAttribute('align', 'center');
+            markerLabel.setAttribute('align', 'center');
 
-          textRight.setAttribute('width', '0.28');
+            markerLabel.setAttribute('width', '0.18');
 
-          textRight.setAttribute('position', '0 0 0.01');
+            markerLabel.setAttribute('position', '0 0 0.001');
 
-          panelRight.appendChild(textRight);
+            marker.appendChild(markerLabel);
 
-          folio.appendChild(panelRight);
-
-
-          // --- CENTRE-LEFT PANEL: 'Info. test two' ---
-
-          const panelLeft = document.createElement('a-entity');
-
-          panelLeft.setAttribute('position', '-0.22 0 0.06');
-
-          panelLeft.setAttribute('visible', 'false');
+            folio.appendChild(marker);
 
 
-          const bgLeft = document.createElement('a-plane');
+            // --- Info panel: dark background + gold text ---
 
-          bgLeft.setAttribute('width', '0.3');
+            const panel = document.createElement('a-entity');
 
-          bgLeft.setAttribute('height', '0.15');
+            panel.setAttribute('position', panelPos);
 
-          bgLeft.setAttribute('color', '#1a1a2e');
-
-          bgLeft.setAttribute('opacity', '0.92');
-
-          panelLeft.appendChild(bgLeft);
+            panel.setAttribute('visible', 'false');
 
 
-          const textLeft = document.createElement('a-text');
+            const bg = document.createElement('a-plane');
 
-          textLeft.setAttribute('value', 'Info. test two');
+            bg.setAttribute('width', '0.36');
 
-          textLeft.setAttribute('color', '#FFD700');
+            bg.setAttribute('height', '0.18');
 
-          textLeft.setAttribute('align', 'center');
+            bg.setAttribute('material', 'color: #1a1a2e; opacity: 0.92; side: double');
 
-          textLeft.setAttribute('width', '0.28');
-
-          textLeft.setAttribute('position', '0 0 0.01');
-
-          panelLeft.appendChild(textLeft);
-
-          folio.appendChild(panelLeft);
+            panel.appendChild(bg);
 
 
-          // Toggle function: both panels shown/hidden together
+            const txt = document.createElement('a-text');
 
-          const toggleHotspots = () => {
+            txt.setAttribute('value', labelText);
 
-            hotspotsVisible = !hotspotsVisible;
+            txt.setAttribute('color', '#FFD700');
 
-            panelRight.setAttribute('visible', hotspotsVisible);
+            txt.setAttribute('align', 'center');
 
-            panelLeft.setAttribute('visible', hotspotsVisible);
+            txt.setAttribute('width', '0.32');
+
+            txt.setAttribute('position', '0 0 0.01');
+
+            panel.appendChild(txt);
+
+            folio.appendChild(panel);
+
+
+            // --- Toggle: laser must point at marker and trigger pulled ---
+
+            let open = false;
+
+            marker.addEventListener('click', () => {
+
+              open = !open;
+
+              panel.setAttribute('visible', open);
+
+            });
 
           };
 
 
-          // Bind to both A (right controller) and X (left controller).
-          // Wait for scene loaded before querying controller entities.
+          // Centre-right hotspot — marker at (0.24, -0.05), panel above at (0.24, 0.17)
 
-          this.el.sceneEl.addEventListener('loaded', () => {
+          makeHotspot('0.24 -0.05 0.06', '0.24 0.17 0.06', 'Info. test one');
 
-            const rightCtrl = document.querySelector('[laser-controls="hand: right"]');
 
-            const leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
+          // Centre-left hotspot — marker at (-0.24, -0.05), panel above at (-0.24, 0.17)
 
-            if (rightCtrl) rightCtrl.addEventListener('abuttondown', toggleHotspots);
-
-            if (leftCtrl)  leftCtrl.addEventListener('xbuttondown',  toggleHotspots);
-
-          });
+          makeHotspot('-0.24 -0.05 0.06', '-0.24 0.17 0.06', 'Info. test two');
 
         }
 
