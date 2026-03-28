@@ -359,31 +359,12 @@
 
         /**
          * CANDLE FLICKER — ENHANCED
-         * -------------------------
          * Option 1: Position micro-drift.
-         *   Two overlapping sine waves on x and y at different frequencies,
-         *   plus a small random jitter each frame. Updates object3D.position
-         *   directly (no setAttribute overhead) every frame so the light
-         *   source sways continuously, shifting its highlight and shadow
-         *   across the folio surface organically.
-         *
          * Option 2: Organic intensity curve.
-         *   A slow sine wave (~3 second cycle) forms the base breathing
-         *   rhythm. A faster flutter wave and random noise are added on top.
-         *   The result is a natural, non-mechanical flame that breathes
-         *   slowly and gutters quickly at the same time.
-         *
          * Option 3: Colour temperature variation.
-         *   Lerps between a warm orange-red (#ff7733) when the flame is dim
-         *   and a cooler yellow-white (#ffee88) when it flares. Intensity
-         *   and colour are updated together on a 50ms gate so performance
-         *   remains healthy on Quest 2.
          */
 
         init: function () {
-
-          // Read the initial position from the HTML attribute so all drift
-          // is always relative to wherever the candle entity was placed.
 
           const initPos = this.el.getAttribute('position');
 
@@ -393,16 +374,9 @@
 
           this.baseZ = initPos ? initPos.z : 0.5;
 
-
-          // Independent random phase offsets so x and y sway out of sync,
-          // preventing any mechanical-looking looping pattern.
-
           this.phaseX = Math.random() * Math.PI * 2;
 
           this.phaseY = Math.random() * Math.PI * 2;
-
-
-          // Timestamp gate for light attribute updates.
 
           this.lastLightUpdate = 0;
 
@@ -410,15 +384,6 @@
 
 
         tick: function (t) {
-
-
-          // -----------------------------------------------------------
-          // OPTION 1: Position micro-drift
-          // Two sine waves per axis at different frequencies, plus fine
-          // per-frame noise. Amplitudes are deliberately small (0.008 –
-          // 0.015 units) so the source moves just enough to shift
-          // highlights on the folio without looking unstable.
-          // -----------------------------------------------------------
 
           const driftX = Math.sin(t * 0.0007 + this.phaseX) * 0.015
 
@@ -434,9 +399,6 @@
                        + (Math.random() - 0.5) * 0.003;
 
 
-          // Direct object3D mutation — far cheaper than setAttribute,
-          // safe to call every frame.
-
           this.el.object3D.position.set(
 
             this.baseX + driftX,
@@ -448,19 +410,9 @@
           );
 
 
-          // -----------------------------------------------------------
-          // OPTIONS 2 & 3: Intensity and colour — gated to every 50ms
-          // -----------------------------------------------------------
-
           if (t - this.lastLightUpdate > 50) {
 
             this.lastLightUpdate = t;
-
-
-            // OPTION 2: Organic intensity curve.
-            // slowBreath: a ~3 second sine cycle, range 0.0 – 0.5.
-            // fastFlutter: a faster sine, range ±0.10.
-            // noise: per-update random component, range ±0.075.
 
             const slowBreath  = Math.sin(t * 0.00035) * 0.25 + 0.25;
 
@@ -474,20 +426,11 @@
 
             ));
 
-
-            // OPTION 3: Colour temperature.
-            // Dim flame (intensity 0.9) → warm orange-red  #ff7733
-            //   rgb(255, 119, 51)
-            // Bright flame (intensity 1.8) → cool yellow   #ffee88
-            //   rgb(255, 238, 136)
-            // t_col normalises intensity into the 0 – 1 range.
-
             const t_col = (intensity - 0.9) / 0.9;
 
-            const g = Math.round(119 + t_col * 119); // 119 → 238
+            const g = Math.round(119 + t_col * 119);
 
-            const b = Math.round(51  + t_col * 85);  // 51  → 136
-
+            const b = Math.round(51  + t_col * 85);
 
             this.el.setAttribute('light', {
 
@@ -509,19 +452,7 @@
        * -------------------------
        * Creates two independent hotspots on the folio, each with an
        * invisible detection zone and a separate info panel.
-       *
-       * HOW IT WORKS:
-       * - Each zone is a transparent clickable plane. The laser raycaster
-       *   detects it on mouseenter/mouseleave, setting a flag on the folio
-       *   so vr-grab-rotate knows not to start a grab while a zone is aimed at.
-       * - Pressing A (right controller) or X (left controller) toggles ONLY
-       *   the panel whose zone is currently being pointed at.
-       * - If the controller is not pointing at either zone, A/X do nothing.
-       * - Each panel is fully independent — one can be open while the other
-       *   is closed.
-       *
-       * Zone positions (folio-local space, centre = 0 0):
-       *   Right zone: x= 0.24   Left zone: x=-0.24  (0.48 units apart)
+       * Pressing A or X while pointing at a zone toggles that panel.
        */
 
       AFRAME.registerComponent('folio-hotspots', {
@@ -530,25 +461,10 @@
 
           const folio = this.el;
 
-
-          // targetedPanel tracks which panel the controller is currently
-          // pointing at. null means neither zone is aimed at.
-
           let targetedPanel = null;
 
 
-          /**
-           * makeHotspot(zonePos, panelPos, labelText)
-           * Builds one invisible detection zone + one info panel.
-           * Zone uses mouseenter/mouseleave to set targetedPanel.
-           * Panel has no clickable class — trigger cannot interact with it.
-           */
-
           const makeHotspot = (zonePos, panelPos, labelText) => {
-
-
-            // Invisible detection zone — clickable so laser detects hover.
-            // transparent: true means it is visually invisible.
 
             const zone = document.createElement('a-plane');
 
@@ -566,8 +482,6 @@
 
             folio.appendChild(zone);
 
-
-            // Info panel — no clickable class, trigger cannot touch it.
 
             const panel = document.createElement('a-entity');
 
@@ -601,12 +515,8 @@
 
             panel.appendChild(txt);
 
-
             folio.appendChild(panel);
 
-
-            // When laser enters this zone, mark it as the active target.
-            // Also set the flag on the folio so vr-grab-rotate skips grab.
 
             zone.addEventListener('mouseenter', () => {
 
@@ -616,8 +526,6 @@
 
             });
 
-
-            // When laser leaves this zone, clear the target and flag.
 
             zone.addEventListener('mouseleave', () => {
 
@@ -633,18 +541,10 @@
           };
 
 
-          // Right hotspot — zone centre-right, panel above zone
-
           makeHotspot('0.24 -0.02 0.06', '0.24 0.17 0.06', 'Info. test one');
-
-
-          // Left hotspot — zone centre-left, panel above zone
 
           makeHotspot('-0.24 -0.02 0.06', '-0.24 0.17 0.06', 'Info. test two');
 
-
-          // Toggle ONLY the currently-targeted panel.
-          // If neither zone is aimed at, A/X do nothing.
 
           const toggle = () => {
 
@@ -657,9 +557,144 @@
           };
 
 
-          // Bind A (right controller) and X (left controller).
-
           this.el.sceneEl.addEventListener('loaded', () => {
+
+            const rightCtrl = document.querySelector('[laser-controls="hand: right"]');
+
+            const leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
+
+            if (rightCtrl) rightCtrl.addEventListener('abuttondown', toggle);
+
+            if (leftCtrl)  leftCtrl.addEventListener('xbuttondown',  toggle);
+
+          });
+
+        }
+
+      });
+
+
+      /**
+       * COMPONENT: PANEL AUDIO
+       * ----------------------
+       * Attaches to the translation and transcription panel entities.
+       * Creates an invisible clickable detection zone covering the panel
+       * text body. When the VR laser points at the zone and the user
+       * presses A (right controller) or X (left controller), the audio
+       * reading for the current folio page plays. Pressing again pauses
+       * and resets it. Only one panel audio plays at a time. Audio stops
+       * automatically when the page is swapped.
+       *
+       * Schema:
+       *   src1 — selector for the page-1 audio element (e.g. #latin1-track)
+       *   src2 — selector for the page-2 audio element (e.g. #latin2-track)
+       */
+
+      AFRAME.registerComponent('panel-audio', {
+
+        schema: {
+
+          src1: { type: 'string', default: '' },
+
+          src2: { type: 'string', default: '' }
+
+        },
+
+
+        init: function () {
+
+          const panel = this.el;
+
+          const scene = this.el.sceneEl;
+
+          let isTargeted = false;
+
+
+          // Invisible detection zone covering the panel text body.
+          // Clickable so the laser raycaster fires mouseenter/mouseleave.
+          // The trigger is never used — only A/X buttons control audio.
+
+          const zone = document.createElement('a-plane');
+
+          zone.setAttribute('width', '1.0');
+
+          zone.setAttribute('height', '1.2');
+
+          zone.setAttribute('position', '0 -0.1 0.02');
+
+          zone.setAttribute('material', 'opacity: 0; transparent: true; side: double');
+
+          zone.classList.add('clickable');
+
+          panel.appendChild(zone);
+
+
+          zone.addEventListener('mouseenter', () => { isTargeted = true;  });
+
+          zone.addEventListener('mouseleave', () => { isTargeted = false; });
+
+
+          // Returns the correct raw HTML audio element for the current page.
+
+          const getAudio = () => {
+
+            const page  = scene.currentAudioPage || 1;
+
+            const srcId = (page === 1) ? this.data.src1 : this.data.src2;
+
+            return srcId ? document.querySelector(srcId) : null;
+
+          };
+
+
+          // Toggle play/pause for this panel's audio.
+          // Stops any other panel audio that is already playing.
+
+          const toggle = () => {
+
+            if (!isTargeted) return;
+
+            const audio = getAudio();
+
+            if (!audio) return;
+
+
+            // Stop a different panel's audio if it is currently playing.
+
+            if (scene.currentPanelAudio && scene.currentPanelAudio !== audio) {
+
+              scene.currentPanelAudio.pause();
+
+              scene.currentPanelAudio.currentTime = 0;
+
+              scene.currentPanelAudio = null;
+
+            }
+
+
+            if (audio.paused) {
+
+              audio.play();
+
+              scene.currentPanelAudio = audio;
+
+            } else {
+
+              audio.pause();
+
+              audio.currentTime = 0;
+
+              scene.currentPanelAudio = null;
+
+            }
+
+          };
+
+
+          // Bind to A (right controller) and X (left controller),
+          // mirroring the folio-hotspots binding pattern exactly.
+
+          scene.addEventListener('loaded', () => {
 
             const rightCtrl = document.querySelector('[laser-controls="hand: right"]');
 
@@ -722,6 +757,10 @@
 
           let currentPage = 1;
 
+          // Expose current page on the scene element so panel-audio can read it.
+
+          this.el.currentAudioPage = 1;
+
           let isMuted = false;
 
 
@@ -773,8 +812,6 @@
 
             zoomed = !zoomed;
 
-            // Auto-Hide the info panel during zoom to prevent it blocking the translation
-
             infoPanel.setAttribute('visible', !zoomed);
 
             zoomAnchor.setAttribute('animation', {
@@ -818,6 +855,22 @@
             playClick();
 
             currentPage = (currentPage === 1) ? 2 : 1;
+
+            // Keep the scene-level page flag in sync for panel-audio.
+
+            this.el.currentAudioPage = currentPage;
+
+            // Stop any panel audio that is playing when the page changes.
+
+            if (this.el.currentPanelAudio) {
+
+              this.el.currentPanelAudio.pause();
+
+              this.el.currentPanelAudio.currentTime = 0;
+
+              this.el.currentPanelAudio = null;
+
+            }
 
             folio.setAttribute('src', currentPage === 1 ? '#manuscript1' : '#manuscript2');
 
@@ -911,6 +964,17 @@
 
         <audio id="click-track" src="click.mp3" preload="auto"></audio>
 
+        <!-- Panel audio: one file per text panel per folio page.        -->
+        <!-- Replace the src filenames with your actual audio filenames. -->
+
+        <audio id="latin1-track"   src="latin1.mp3"   preload="auto"></audio>
+
+        <audio id="english1-track" src="english1.mp3" preload="auto"></audio>
+
+        <audio id="latin2-track"   src="latin2.mp3"   preload="auto"></audio>
+
+        <audio id="english2-track" src="english2.mp3" preload="auto"></audio>
+
       </a-assets>
 
 
@@ -996,7 +1060,7 @@
       </a-entity>
 
 
-      <a-entity id="translation-panel" position="-2.06 1.5 -0.75" look-at-user>
+      <a-entity id="translation-panel" position="-2.06 1.5 -0.75" look-at-user panel-audio="src1: #english1-track; src2: #english2-track">
 
           <a-plane width="1.2" height="1.8" color="#111" opacity="0.9" material="side: double;"></a-plane>
 
@@ -1007,7 +1071,7 @@
       </a-entity>
 
 
-      <a-entity id="transcription-panel" position="-2.06 1.5 0.75" look-at-user>
+      <a-entity id="transcription-panel" position="-2.06 1.5 0.75" look-at-user panel-audio="src1: #latin1-track; src2: #latin2-track">
 
           <a-plane width="1.2" height="1.8" color="#111" opacity="0.9" material="side: double;"></a-plane>
 
