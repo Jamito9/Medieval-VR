@@ -19,8 +19,8 @@
        * COMPONENT: LOOK AT USER
        * -----------------------
        * This component ensures that the information panels always rotate
-       * to face the user's camera. This creates the "imaginary line"
-       * connection you requested, ensuring the panels tilt dynamically
+       * to face the user's camera. This creates an "imaginary line"
+       * connection, ensuring the panels tilt dynamically
        * as the user moves within the VR space or looks around.
        */
 
@@ -195,76 +195,131 @@
 
 
       /**
-       * COMPONENT: PAGE TURN
+       * COMPONENT: PAGE CURL
        * --------------------
-       * Provides a realistic page-peel interaction, replacing page-corners.
+       * Rolling-cylinder vertex deformation page curl. Replaces page-corners.
        *
-       * Architecture
-       * ────────────
-       * backPage   — full-folio plane at z = -0.004, child of folio. Always
-       *              shows the destination manuscript texture. Invisible until
-       *              a turn begins; inherits all tilt / zoom transforms.
+       * ── VR input (completely isolated from trigger/tilt) ─────────────────
+       * A button (right controller) → right-side curl (page turns forward).
+       * X button (left  controller) → left-side  curl (page turns backward).
+       * Hold A/X and move controller left/right to drag the peel.
+       * Release A/X at ≥ 50 % progress → completeCurl → swap + sound.
+       * Release A/X at  < 50 % progress → snapBack   → no swap.
        *
-       * rightHinge — pivot entity at folio-local (-0.55, 0, 0.002), i.e. the
-       *              LEFT spine. Its child rightFlap centres over the folio.
-       *              Rotating the hinge +180° on Y sweeps the page away from
-       *              the viewer (confirmed with Three.js Y-rotation matrix).
+       * Using A/X instead of the trigger means tilt (vr-grab-rotate) and
+       * haptic feedback are completely unaffected — they use the trigger
+       * exclusively and share zero input with the curl.
        *
-       * leftHinge  — pivot entity at folio-local (+0.55, 0, 0.002), the RIGHT
-       *              spine. Rotating -180° on Y mirrors the same motion.
+       * ── Desktop ──────────────────────────────────────────────────────────
+       * Click either bottom corner zone → instant swap + sound.
        *
-       * Corner zones — invisible clickable planes at z = 0.01 so the raycaster
-       *              hits them before the folio mesh. mousedown fires
-       *              stopPropagation() to prevent drag-rotate from activating.
+       * ── Isolation guarantees ─────────────────────────────────────────────
+       * 1. Trigger isolation: curl uses A/X buttons only. Trigger is
+       *    100 % dedicated to vr-grab-rotate (tilt) and haptic feedback.
        *
-       * VR flow
-       * ───────
-       *   1. Trigger-down on right corner → startTurn('right').
-       *      Controller world-X position recorded as startX.
-       *   2. tick() maps (–deltaX × 400) to hinge rotation 0°→+180°.
-       *      Drag left = negative deltaX → positive angle. ✓
-       *   3. triggerup → if |angle| ≥ 90°: completeTurn(); else snapBack().
-       *      completeTurn plays sound, animates to 180°, then after 350 ms
-       *      calls resetTurn() + swap-button.click() (handles all page state).
-       *      snapBack animates to 0°, then calls resetTurn().
+       * 2. Raycaster isolation: on enter-vr the 'clickable' class is removed
+       *    from both corner zones so they are invisible to the raycaster in
+       *    VR. The folio body receives all laser hits cleanly. On exit-vr the
+       *    class is restored for desktop use.
        *
-       * Desktop flow
-       * ────────────
-       *   Click either corner → instant swap + sound (no drag required).
+       * 3. folio-hotspots isolation: the abuttondown/xbuttondown handler
+       *    reads folio.components['folio-hotspots'].targetedPanel before
+       *    starting a curl. If a hotspot is targeted the hotspot toggle fires
+       *    and curl does not start. Additionally the handler checks that the
+       *    controller's raycaster is currently intersecting the folio — so
+       *    pressing A while pointing at a text panel does nothing.
        *
-       * Isolation guarantees
-       * ────────────────────
-       * • vr-grab-rotate listens on the folio entity. Corner zones intercept
-       *   the raycaster first (z = 0.01) and call stopPropagation(), so tilt
-       *   never starts from a corner press.
-       * • folio-hotspots uses tick-based worldToLocal detection — unaffected.
-       * • haptic feedback on the folio body is unaffected.
-       * • resetTurn() restores folio opacity via setAttribute merge, preserving
-       *   metalness / roughness set by the MATERIAL button toggle.
+       * ── Geometry ─────────────────────────────────────────────────────────
+       * curlMesh  THREE.PlaneGeometry(1.1, 0.8, 50, 1). 50 column segments
+       *           give a smooth arc. 1 row is sufficient (curl is in X only).
+       *           Added to folio.object3D at z = +0.001 (1 mm in front).
+       *           MeshStandardMaterial, DoubleSide, synced texture.
+       *
+       * backPage  a-plane at z = -0.004. Shows destination texture.
+       *           Child of folio → inherits all tilt and zoom transforms.
+       *
+       * ── Rolling-cylinder formula ──────────────────────────────────────────
+       * R = 0.04 m (4 cm radius).  Arc width = π × R ≈ 12.6 cm.
+       *
+       * Right-side peel (peelProgress 0 → 1):
+       *   peelX = 0.55 − peelProgress × 1.1
+       *   d = x0 − peelX
+       *   d ≤ 0       flat unpeeled:  x = x0,                z = 0
+       *   0 < d ≤ πR  curl arc:      x = peelX + R·sin(d/R), z = R·(1−cos(d/R))
+       *   d > πR      back face:     x = x0,                 z = −0.002
+       *
+       * Verified:
+       *   d = 0    → x = peelX,    z = 0    (surface contact)     ✓
+       *   d = πR/2 → x = peelX+R, z = R    (top of arc)          ✓
+       *   d = πR   → x = peelX,   z = 2R   (fully curled over)   ✓
+       *
+       * Mirror logic for left-side peel.
        */
 
-      AFRAME.registerComponent('page-turn', {
+      AFRAME.registerComponent('page-curl', {
 
         init: function () {
 
           const folio = this.el;
           const scene = folio.sceneEl;
 
-          this.isTurning        = false;
-          this.turnSide         = null;   // 'right' | 'left'
+          // ── State ─────────────────────────────────────────────────────────
+
+          this.isCurling        = false;
+          this.curlSide         = null;     // 'right' | 'left'
           this.activeController = null;
           this.startX           = 0;
-          this.currentAngle     = 0;
+          this.peelProgress     = 0;
           this.isVR             = false;
           this._ctrlPos         = new THREE.Vector3();
+          this.R                = 0.04;     // curl radius in metres
 
-          scene.addEventListener('enter-vr', () => { this.isVR = true;  });
-          scene.addEventListener('exit-vr',  () => { this.isVR = false; });
+          scene.addEventListener('enter-vr', () => {
+            this.isVR = true;
+            // Remove clickable from corners in VR so the raycaster reaches
+            // the folio body cleanly. Tilt and haptics are unaffected.
+            this.rightCorner.classList.remove('clickable');
+            this.leftCorner.classList.remove('clickable');
+          });
+
+          scene.addEventListener('exit-vr', () => {
+            this.isVR = false;
+            // Restore for desktop use.
+            this.rightCorner.classList.add('clickable');
+            this.leftCorner.classList.add('clickable');
+          });
 
 
-          // ── Back page ──────────────────────────────────────────────────────
-          // Destination manuscript. Sits at z = -0.004 (behind folio mesh).
-          // Parented to folio so it inherits tilt and zoom.
+          // ── Curl mesh ─────────────────────────────────────────────────────
+
+          this.curlGeo = new THREE.PlaneGeometry(1.1, 0.8, 50, 1);
+
+          const posAttr = this.curlGeo.attributes.position;
+          const vCount  = posAttr.count;
+
+          this.origX = new Float32Array(vCount);
+          this.origY = new Float32Array(vCount);
+
+          for (let i = 0; i < vCount; i++) {
+            this.origX[i] = posAttr.getX(i);
+            this.origY[i] = posAttr.getY(i);
+          }
+
+          this.curlMat = new THREE.MeshStandardMaterial({
+            side:        THREE.DoubleSide,
+            roughness:   0.8,
+            metalness:   0.1,
+            transparent: false
+          });
+
+          this.curlMesh            = new THREE.Mesh(this.curlGeo, this.curlMat);
+          this.curlMesh.position.z = 0.001;
+          this.curlMesh.visible    = false;
+
+          folio.object3D.add(this.curlMesh);
+
+
+          // ── Back page ─────────────────────────────────────────────────────
 
           this.backPage = document.createElement('a-plane');
           this.backPage.setAttribute('width',    '1.1');
@@ -276,49 +331,8 @@
           folio.appendChild(this.backPage);
 
 
-          // ── Right hinge (spine at left edge, x = -0.55) ───────────────────
-          // +180° Y rotation (CCW from above in Three.js) sweeps the flap
-          // away from the viewer. Verified:
-          //   point (0.55, 0, 0) at +90° → (0, 0, -0.55)  [behind folio]
-          //   point (0.55, 0, 0) at +180° → (-0.55, 0, 0)  [fully turned]
-
-          this.rightHinge = document.createElement('a-entity');
-          this.rightHinge.setAttribute('position', '-0.55 0 0.002');
-          this.rightHinge.setAttribute('visible',  'false');
-
-          this.rightFlap = document.createElement('a-plane');
-          this.rightFlap.setAttribute('width',    '1.1');
-          this.rightFlap.setAttribute('height',   '0.8');
-          this.rightFlap.setAttribute('position', '0.55 0 0');  // centres over folio
-          this.rightFlap.setAttribute('material',
-            'shader: standard; metalness: 0.1; roughness: 0.8; side: double');
-          this.rightHinge.appendChild(this.rightFlap);
-          folio.appendChild(this.rightHinge);
-
-
-          // ── Left hinge (spine at right edge, x = +0.55) ───────────────────
-          // -180° Y rotation mirrors the same motion.
-          // Verified:
-          //   point (-0.55, 0, 0) at -90° → (0, 0, -0.55)  [behind folio]
-          //   point (-0.55, 0, 0) at -180° → (0.55, 0, 0)   [fully turned]
-
-          this.leftHinge = document.createElement('a-entity');
-          this.leftHinge.setAttribute('position', '0.55 0 0.002');
-          this.leftHinge.setAttribute('visible',  'false');
-
-          this.leftFlap = document.createElement('a-plane');
-          this.leftFlap.setAttribute('width',    '1.1');
-          this.leftFlap.setAttribute('height',   '0.8');
-          this.leftFlap.setAttribute('position', '-0.55 0 0');  // centres over folio
-          this.leftFlap.setAttribute('material',
-            'shader: standard; metalness: 0.1; roughness: 0.8; side: double');
-          this.leftHinge.appendChild(this.leftFlap);
-          folio.appendChild(this.leftHinge);
-
-
-          // ── Corner interaction zones ───────────────────────────────────────
-          // z = 0.01 ensures raycaster hits zones before the folio mesh.
-          // stopPropagation() on mousedown prevents drag-rotate from firing.
+          // ── Corner zones ──────────────────────────────────────────────────
+          // Desktop only (clickable class removed in VR via enter-vr above).
 
           this.rightCorner = document.createElement('a-plane');
           this.rightCorner.setAttribute('position', '0.4 -0.3 0.01');
@@ -337,9 +351,7 @@
           folio.appendChild(this.leftCorner);
 
 
-          // ── Page-turn sound ────────────────────────────────────────────────
-          // Uses the native audio element directly (no A-Frame sound component
-          // needed; avoids dynamic entity timing issues).
+          // ── Page-turn sound ───────────────────────────────────────────────
 
           const playPageTurn = () => {
             const audio = document.querySelector('#pageturn-track');
@@ -347,107 +359,117 @@
           };
 
 
-          // ── startTurn ──────────────────────────────────────────────────────
+          // ── startCurl ─────────────────────────────────────────────────────
 
-          const startTurn = (side, evt) => {
+          const startCurl = (side, controllerEl) => {
 
-            if (this.isTurning) return;
+            if (this.isCurling) return;
 
             const currentPage = scene.currentAudioPage || 1;
             const nextPage    = currentPage === 1 ? 2 : 1;
 
-            // Back page shows the destination texture.
+            // Sync curl mesh texture and material from the folio.
+            const folioMesh = folio.getObject3D('mesh');
+            if (folioMesh && folioMesh.material) {
+              if (folioMesh.material.map) {
+                this.curlMat.map         = folioMesh.material.map;
+                this.curlMat.needsUpdate = true;
+              }
+              this.curlMat.metalness = folioMesh.material.metalness;
+              this.curlMat.roughness = folioMesh.material.roughness;
+            }
+
+            // Show destination texture on back page.
             this.backPage.setAttribute('src',
               nextPage === 1 ? '#manuscript1' : '#manuscript2');
             this.backPage.setAttribute('visible', 'true');
 
-            // Flap shows the current page texture; activate correct hinge.
-            const flapEl  = side === 'right' ? this.rightFlap  : this.leftFlap;
-            const hingeEl = side === 'right' ? this.rightHinge : this.leftHinge;
-
-            flapEl.setAttribute('src',
-              currentPage === 1 ? '#manuscript1' : '#manuscript2');
-            hingeEl.object3D.rotation.y = 0;         // guarantee clean start
-            hingeEl.setAttribute('visible', 'true');
-
-            // Hide the folio's own mesh (children keep their materials).
-            // Using setAttribute merge — metalness/roughness are preserved.
+            // Show curl mesh; make folio transparent.
+            // String-form setAttribute merges → metalness/roughness preserved.
+            this.curlMesh.visible = true;
             folio.setAttribute('material', 'opacity: 0; transparent: true');
 
-            this.isTurning        = true;
-            this.turnSide         = side;
-            this.currentAngle     = 0;
-            this.activeController = null;
+            this.isCurling        = true;
+            this.curlSide         = side;
+            this.peelProgress     = 0;
+            this.activeController = controllerEl || null;
 
-            if (this.isVR && evt && evt.detail && evt.detail.cursorEl) {
-              this.activeController = evt.detail.cursorEl;
+            if (this.activeController) {
               this.activeController.object3D.getWorldPosition(this._ctrlPos);
               this.startX = this._ctrlPos.x;
             }
 
+            this.updateCurl(0, side);
           };
 
 
-          // ── completeTurn ───────────────────────────────────────────────────
-          // Called when triggerup fires at |angle| >= 90°.
+          // ── completeCurl ──────────────────────────────────────────────────
 
-          const completeTurn = () => {
+          const completeCurl = () => {
 
             playPageTurn();
 
-            const hingeEl = this.turnSide === 'right' ? this.rightHinge : this.leftHinge;
-            const targetY = this.turnSide === 'right' ? 180 : -180;
+            this.activeController = null;   // stop tick() tracking
 
-            this.activeController = null;   // stops tick() tracking
+            const startProg = this.peelProgress;
+            const startTime = performance.now();
+            const duration  = 300;
 
-            hingeEl.setAttribute('animation__turn', {
-              property: 'rotation',
-              to:       '0 ' + targetY + ' 0',
-              dur:      300,
-              easing:   'easeInQuad'
-            });
+            const animate = (now) => {
+              const t     = Math.min((now - startTime) / duration, 1);
+              const eased = t * (2 - t);    // ease-out quad
 
-            // 350 ms gives the 300 ms animation a 50 ms safety margin.
-            setTimeout(() => {
-              this.resetTurn();
-              document.querySelector('#swap-button').click();
-            }, 350);
+              this.peelProgress = startProg + (1 - startProg) * eased;
+              this.updateCurl(this.peelProgress, this.curlSide);
 
+              if (t < 1) {
+                requestAnimationFrame(animate);
+              } else {
+                setTimeout(() => {
+                  this.resetCurl();
+                  document.querySelector('#swap-button').click();
+                }, 50);
+              }
+            };
+
+            requestAnimationFrame(animate);
           };
 
 
-          // ── snapBack ───────────────────────────────────────────────────────
-          // Called when triggerup fires at |angle| < 90°.
+          // ── snapBack ──────────────────────────────────────────────────────
 
           const snapBack = () => {
 
-            const hingeEl = this.turnSide === 'right' ? this.rightHinge : this.leftHinge;
+            this.activeController = null;   // stop tick() tracking
 
-            this.activeController = null;   // stops tick() tracking
+            const startProg = this.peelProgress;
+            const startTime = performance.now();
+            const duration  = 250;
 
-            hingeEl.setAttribute('animation__turn', {
-              property: 'rotation',
-              to:       '0 0 0',
-              dur:      250,
-              easing:   'easeOutQuad'
-            });
+            const animate = (now) => {
+              const t     = Math.min((now - startTime) / duration, 1);
+              const eased = t * (2 - t);    // ease-out quad
 
-            // 300 ms gives the 250 ms animation a 50 ms safety margin.
-            setTimeout(() => {
-              this.resetTurn();
-            }, 300);
+              this.peelProgress = startProg * (1 - eased);
+              this.updateCurl(this.peelProgress, this.curlSide);
 
+              if (t < 1) {
+                requestAnimationFrame(animate);
+              } else {
+                setTimeout(() => { this.resetCurl(); }, 50);
+              }
+            };
+
+            requestAnimationFrame(animate);
           };
 
 
-          // ── Corner mousedown handlers ──────────────────────────────────────
+          // ── Desktop corner click handlers ─────────────────────────────────
+          // In VR the corners have no 'clickable' class so these never fire.
 
           this.rightCorner.addEventListener('mousedown', (evt) => {
-            evt.stopPropagation();      // prevent drag-rotate from activating
-            if (this.isVR) {
-              startTurn('right', evt);
-            } else {
-              // Desktop: instant swap + sound.
+            evt.stopPropagation();
+            if (!this.isVR) {
               playPageTurn();
               document.querySelector('#swap-button').click();
             }
@@ -455,94 +477,208 @@
 
           this.leftCorner.addEventListener('mousedown', (evt) => {
             evt.stopPropagation();
-            if (this.isVR) {
-              startTurn('left', evt);
-            } else {
+            if (!this.isVR) {
               playPageTurn();
               document.querySelector('#swap-button').click();
             }
           });
 
 
-          // ── Trigger-release handlers ───────────────────────────────────────
-          // Bound to both controllers so release is caught even if the laser
-          // drifts off the corner zone during the drag.
+          // ── VR A/X button handlers ────────────────────────────────────────
+          // Bound after scene loaded so controller entities exist.
+          // Guards (in order):
+          //   1. Must be in VR and not already curling.
+          //   2. Controller raycaster must be intersecting the folio — so
+          //      pressing A while pointing at a text panel does nothing.
+          //   3. folio-hotspots must not have a panel targeted — if a
+          //      hotspot annotation is aimed at, that takes priority.
 
           scene.addEventListener('loaded', () => {
 
             const rightCtrl = document.querySelector('[laser-controls="hand: right"]');
             const leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
 
-            const onTriggerUp = () => {
-              if (!this.isTurning || !this.isVR) return;
-              if (Math.abs(this.currentAngle) >= 90) {
-                completeTurn();
-              } else {
-                snapBack();
-              }
+            const isFolioHit = (ctrl) => {
+              const rc = ctrl.components && ctrl.components.raycaster;
+              if (!rc || !rc.intersectedEls) return false;
+              return rc.intersectedEls.indexOf(folio) >= 0;
             };
 
-            if (rightCtrl) rightCtrl.addEventListener('triggerup', onTriggerUp);
-            if (leftCtrl)  leftCtrl.addEventListener('triggerup',  onTriggerUp);
+            const isHotspotTargeted = () => {
+              const hs = folio.components['folio-hotspots'];
+              return hs && hs.targetedPanel !== null;
+            };
+
+            // ── Right controller — A button ───────────────────────────────
+
+            if (rightCtrl) {
+
+              rightCtrl.addEventListener('abuttondown', () => {
+                if (!this.isVR || this.isCurling)       return;
+                if (!isFolioHit(rightCtrl))             return;
+                if (isHotspotTargeted())                return;
+                startCurl('right', rightCtrl);
+              });
+
+              rightCtrl.addEventListener('abuttonup', () => {
+                if (!this.isCurling || !this.isVR)      return;
+                if (this.peelProgress >= 0.5) {
+                  completeCurl();
+                } else {
+                  snapBack();
+                }
+              });
+
+            }
+
+            // ── Left controller — X button ────────────────────────────────
+
+            if (leftCtrl) {
+
+              leftCtrl.addEventListener('xbuttondown', () => {
+                if (!this.isVR || this.isCurling)       return;
+                if (!isFolioHit(leftCtrl))              return;
+                if (isHotspotTargeted())                return;
+                startCurl('left', leftCtrl);
+              });
+
+              leftCtrl.addEventListener('xbuttonup', () => {
+                if (!this.isCurling || !this.isVR)      return;
+                if (this.peelProgress >= 0.5) {
+                  completeCurl();
+                } else {
+                  snapBack();
+                }
+              });
+
+            }
 
           });
 
         },
 
 
-        // ── resetTurn ─────────────────────────────────────────────────────────
-        // Restores the folio and hides all page-turn geometry.
-        // Only opacity / transparent are set on the folio material so that
-        // metalness / roughness from the MATERIAL button toggle are preserved.
+        /**
+         * updateCurl
+         * ----------
+         * Applies the rolling-cylinder vertex formula to curlGeo each call.
+         * Called from tick() during drag and from the animation loops.
+         */
 
-        resetTurn: function () {
+        updateCurl: function (peelProgress, side) {
 
-          const folio = this.el;
+          const R       = this.R;
+          const piR     = Math.PI * R;
+          const posAttr = this.curlGeo.attributes.position;
 
-          folio.setAttribute('material', 'opacity: 1; transparent: false');
+          const peelX = side === 'right'
+            ?  0.55 - peelProgress * 1.1
+            : -0.55 + peelProgress * 1.1;
 
-          this.rightHinge.setAttribute('visible', 'false');
-          this.leftHinge.setAttribute('visible',  'false');
-          this.backPage.setAttribute('visible',   'false');
+          for (let i = 0; i < posAttr.count; i++) {
 
-          // Reset rotations so the next turn starts clean.
-          this.rightHinge.object3D.rotation.y = 0;
-          this.leftHinge.object3D.rotation.y  = 0;
+            const x0 = this.origX[i];
+            const y0 = this.origY[i];
+            let x, z;
 
-          this.isTurning        = false;
-          this.turnSide         = null;
-          this.activeController = null;
-          this.currentAngle     = 0;
+            if (side === 'right') {
+
+              const d = x0 - peelX;
+
+              if (d <= 0) {
+                x = x0;  z = 0;
+              } else if (d <= piR) {
+                const angle = d / R;
+                x = peelX + R * Math.sin(angle);
+                z = R * (1 - Math.cos(angle));
+              } else {
+                x = x0;  z = -0.002;
+              }
+
+            } else {
+
+              const d = peelX - x0;
+
+              if (d <= 0) {
+                x = x0;  z = 0;
+              } else if (d <= piR) {
+                const angle = d / R;
+                x = peelX - R * Math.sin(angle);
+                z = R * (1 - Math.cos(angle));
+              } else {
+                x = x0;  z = -0.002;
+              }
+
+            }
+
+            posAttr.setXYZ(i, x, y0, z);
+
+          }
+
+          posAttr.needsUpdate = true;
+          this.curlGeo.computeVertexNormals();
 
         },
 
 
-        // ── tick ──────────────────────────────────────────────────────────────
-        // Maps controller world-X delta to hinge rotation.
-        //
-        // Right turn: user drags left → deltaX negative → rawAngle positive
-        //             → hinge sweeps 0° → +180°  ✓
-        // Left  turn: user drags right → deltaX positive → rawAngle negative
-        //             → hinge sweeps 0° → -180°  ✓
+        /**
+         * resetCurl
+         * ---------
+         * Restores folio and hides curl geometry.
+         * String-form setAttribute merges — metalness/roughness preserved.
+         */
+
+        resetCurl: function () {
+
+          const folio   = this.el;
+
+          folio.setAttribute('material', 'opacity: 1; transparent: false');
+
+          this.curlMesh.visible = false;
+          this.backPage.setAttribute('visible', 'false');
+
+          const posAttr = this.curlGeo.attributes.position;
+          for (let i = 0; i < posAttr.count; i++) {
+            posAttr.setXYZ(i, this.origX[i], this.origY[i], 0);
+          }
+          posAttr.needsUpdate = true;
+
+          this.isCurling        = false;
+          this.curlSide         = null;
+          this.activeController = null;
+          this.peelProgress     = 0;
+
+        },
+
+
+        /**
+         * tick
+         * ----
+         * Maps controller world-X displacement from startX to peelProgress.
+         * sensitivity = 2.0: 50 cm hand travel = full page turn.
+         * Only runs while isCurling, isVR, and activeController are all set.
+         * activeController is nulled before animations so tick cannot
+         * interfere with completeCurl or snapBack.
+         */
 
         tick: function () {
 
-          if (!this.isTurning || !this.isVR || !this.activeController) return;
+          if (!this.isCurling || !this.isVR || !this.activeController) return;
 
           this.activeController.object3D.getWorldPosition(this._ctrlPos);
 
           const deltaX      = this._ctrlPos.x - this.startX;
-          const sensitivity = 400;              // degrees per metre of hand travel
-          const rawAngle    = -deltaX * sensitivity;
+          const sensitivity = 2.0;
+          let   newProgress;
 
-          if (this.turnSide === 'right') {
-            this.currentAngle = Math.max(0,    Math.min(180,  rawAngle));
+          if (this.curlSide === 'right') {
+            newProgress = Math.max(0, Math.min(1, -deltaX * sensitivity));
           } else {
-            this.currentAngle = Math.max(-180, Math.min(0,    rawAngle));
+            newProgress = Math.max(0, Math.min(1,  deltaX * sensitivity));
           }
 
-          const hingeEl = this.turnSide === 'right' ? this.rightHinge : this.leftHinge;
-          hingeEl.object3D.rotation.y = THREE.MathUtils.degToRad(this.currentAngle);
+          this.peelProgress = newProgress;
+          this.updateCurl(this.peelProgress, this.curlSide);
 
         }
 
@@ -1335,7 +1471,7 @@
 
       <a-entity id="zoom-anchor" position="0 1.1 -1.4">
 
-          <a-plane id="folio-object" class="clickable" drag-rotate vr-grab-rotate page-turn folio-hotspots src="#manuscript1"
+          <a-plane id="folio-object" class="clickable" drag-rotate vr-grab-rotate page-curl folio-hotspots src="#manuscript1"
 
                    position="0 0 0" rotation="0 0 0" width="1.1" height="0.8"
 
