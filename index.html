@@ -58,8 +58,6 @@
        * ---------------------------
        * Replaces the auto-spin with 1:1 hand tracking.
        * Restricted to +/- 30 degrees.
-       * The trigger tilts the folio freely — no hotspot guard needed
-       * because A/X buttons (not the trigger) control hotspot panels.
        */
 
       AFRAME.registerComponent('vr-grab-rotate', {
@@ -154,9 +152,6 @@
 
           this.previousControllerPos.copy(this.currentControllerPos);
 
-          // Continuous haptic: fires every frame while the controller is moving.
-          // Intensity scales with movement speed — fast tilts feel stronger.
-          // The threshold prevents buzzing when the trigger is held but still.
           const movement = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
 
           if (movement > 0.0001) {
@@ -186,7 +181,7 @@
 
               if (gamepad && gamepad.hapticActuators.length > 0) {
 
-                gamepad.hapticActuators[0].pulse(0.4, 30); // Sharp click pulse
+                gamepad.hapticActuators[0].pulse(0.4, 30);
 
               }
 
@@ -200,66 +195,354 @@
 
 
       /**
-       * COMPONENT: PAGE CORNER TRIGGERS
-       * -------------------------------
-       * Creates invisible interaction zones at the bottom corners of
-       * the folio to allow natural page-turning gestures.
+       * COMPONENT: PAGE TURN
+       * --------------------
+       * Provides a realistic page-peel interaction, replacing page-corners.
+       *
+       * Architecture
+       * ────────────
+       * backPage   — full-folio plane at z = -0.004, child of folio. Always
+       *              shows the destination manuscript texture. Invisible until
+       *              a turn begins; inherits all tilt / zoom transforms.
+       *
+       * rightHinge — pivot entity at folio-local (-0.55, 0, 0.002), i.e. the
+       *              LEFT spine. Its child rightFlap centres over the folio.
+       *              Rotating the hinge +180° on Y sweeps the page away from
+       *              the viewer (confirmed with Three.js Y-rotation matrix).
+       *
+       * leftHinge  — pivot entity at folio-local (+0.55, 0, 0.002), the RIGHT
+       *              spine. Rotating -180° on Y mirrors the same motion.
+       *
+       * Corner zones — invisible clickable planes at z = 0.01 so the raycaster
+       *              hits them before the folio mesh. mousedown fires
+       *              stopPropagation() to prevent drag-rotate from activating.
+       *
+       * VR flow
+       * ───────
+       *   1. Trigger-down on right corner → startTurn('right').
+       *      Controller world-X position recorded as startX.
+       *   2. tick() maps (–deltaX × 400) to hinge rotation 0°→+180°.
+       *      Drag left = negative deltaX → positive angle. ✓
+       *   3. triggerup → if |angle| ≥ 90°: completeTurn(); else snapBack().
+       *      completeTurn plays sound, animates to 180°, then after 350 ms
+       *      calls resetTurn() + swap-button.click() (handles all page state).
+       *      snapBack animates to 0°, then calls resetTurn().
+       *
+       * Desktop flow
+       * ────────────
+       *   Click either corner → instant swap + sound (no drag required).
+       *
+       * Isolation guarantees
+       * ────────────────────
+       * • vr-grab-rotate listens on the folio entity. Corner zones intercept
+       *   the raycaster first (z = 0.01) and call stopPropagation(), so tilt
+       *   never starts from a corner press.
+       * • folio-hotspots uses tick-based worldToLocal detection — unaffected.
+       * • haptic feedback on the folio body is unaffected.
+       * • resetTurn() restores folio opacity via setAttribute merge, preserving
+       *   metalness / roughness set by the MATERIAL button toggle.
        */
 
-      AFRAME.registerComponent('page-corners', {
+      AFRAME.registerComponent('page-turn', {
 
         init: function () {
 
           const folio = this.el;
+          const scene = folio.sceneEl;
+
+          this.isTurning        = false;
+          this.turnSide         = null;   // 'right' | 'left'
+          this.activeController = null;
+          this.startX           = 0;
+          this.currentAngle     = 0;
+          this.isVR             = false;
+          this._ctrlPos         = new THREE.Vector3();
+
+          scene.addEventListener('enter-vr', () => { this.isVR = true;  });
+          scene.addEventListener('exit-vr',  () => { this.isVR = false; });
 
 
-          // Define the Left Corner Interaction Plane
+          // ── Back page ──────────────────────────────────────────────────────
+          // Destination manuscript. Sits at z = -0.004 (behind folio mesh).
+          // Parented to folio so it inherits tilt and zoom.
 
-          this.leftCorner = document.createElement('a-plane');
-
-          this.leftCorner.setAttribute('position', '-0.5 -0.35 0.01');
-
-          this.leftCorner.setAttribute('width', '0.2');
-
-          this.leftCorner.setAttribute('height', '0.2');
-
-          this.leftCorner.setAttribute('material', 'opacity: 0; transparent: true');
-
-          this.leftCorner.classList.add('clickable');
+          this.backPage = document.createElement('a-plane');
+          this.backPage.setAttribute('width',    '1.1');
+          this.backPage.setAttribute('height',   '0.8');
+          this.backPage.setAttribute('position', '0 0 -0.004');
+          this.backPage.setAttribute('material',
+            'shader: standard; metalness: 0.1; roughness: 0.8; side: double');
+          this.backPage.setAttribute('visible', 'false');
+          folio.appendChild(this.backPage);
 
 
-          // Define the Right Corner Interaction Plane
+          // ── Right hinge (spine at left edge, x = -0.55) ───────────────────
+          // +180° Y rotation (CCW from above in Three.js) sweeps the flap
+          // away from the viewer. Verified:
+          //   point (0.55, 0, 0) at +90° → (0, 0, -0.55)  [behind folio]
+          //   point (0.55, 0, 0) at +180° → (-0.55, 0, 0)  [fully turned]
+
+          this.rightHinge = document.createElement('a-entity');
+          this.rightHinge.setAttribute('position', '-0.55 0 0.002');
+          this.rightHinge.setAttribute('visible',  'false');
+
+          this.rightFlap = document.createElement('a-plane');
+          this.rightFlap.setAttribute('width',    '1.1');
+          this.rightFlap.setAttribute('height',   '0.8');
+          this.rightFlap.setAttribute('position', '0.55 0 0');  // centres over folio
+          this.rightFlap.setAttribute('material',
+            'shader: standard; metalness: 0.1; roughness: 0.8; side: double');
+          this.rightHinge.appendChild(this.rightFlap);
+          folio.appendChild(this.rightHinge);
+
+
+          // ── Left hinge (spine at right edge, x = +0.55) ───────────────────
+          // -180° Y rotation mirrors the same motion.
+          // Verified:
+          //   point (-0.55, 0, 0) at -90° → (0, 0, -0.55)  [behind folio]
+          //   point (-0.55, 0, 0) at -180° → (0.55, 0, 0)   [fully turned]
+
+          this.leftHinge = document.createElement('a-entity');
+          this.leftHinge.setAttribute('position', '0.55 0 0.002');
+          this.leftHinge.setAttribute('visible',  'false');
+
+          this.leftFlap = document.createElement('a-plane');
+          this.leftFlap.setAttribute('width',    '1.1');
+          this.leftFlap.setAttribute('height',   '0.8');
+          this.leftFlap.setAttribute('position', '-0.55 0 0');  // centres over folio
+          this.leftFlap.setAttribute('material',
+            'shader: standard; metalness: 0.1; roughness: 0.8; side: double');
+          this.leftHinge.appendChild(this.leftFlap);
+          folio.appendChild(this.leftHinge);
+
+
+          // ── Corner interaction zones ───────────────────────────────────────
+          // z = 0.01 ensures raycaster hits zones before the folio mesh.
+          // stopPropagation() on mousedown prevents drag-rotate from firing.
 
           this.rightCorner = document.createElement('a-plane');
-
-          this.rightCorner.setAttribute('position', '0.5 -0.35 0.01');
-
-          this.rightCorner.setAttribute('width', '0.2');
-
-          this.rightCorner.setAttribute('height', '0.2');
-
+          this.rightCorner.setAttribute('position', '0.4 -0.3 0.01');
+          this.rightCorner.setAttribute('width',    '0.25');
+          this.rightCorner.setAttribute('height',   '0.25');
           this.rightCorner.setAttribute('material', 'opacity: 0; transparent: true');
-
           this.rightCorner.classList.add('clickable');
-
-
-          folio.appendChild(this.leftCorner);
-
           folio.appendChild(this.rightCorner);
 
+          this.leftCorner = document.createElement('a-plane');
+          this.leftCorner.setAttribute('position', '-0.4 -0.3 0.01');
+          this.leftCorner.setAttribute('width',    '0.25');
+          this.leftCorner.setAttribute('height',   '0.25');
+          this.leftCorner.setAttribute('material', 'opacity: 0; transparent: true');
+          this.leftCorner.classList.add('clickable');
+          folio.appendChild(this.leftCorner);
 
-          const triggerFlip = () => {
 
-            const swapBtn = document.querySelector('#swap-button');
+          // ── Page-turn sound ────────────────────────────────────────────────
+          // Uses the native audio element directly (no A-Frame sound component
+          // needed; avoids dynamic entity timing issues).
 
-            if (swapBtn) swapBtn.click();
+          const playPageTurn = () => {
+            const audio = document.querySelector('#pageturn-track');
+            if (audio) { audio.currentTime = 0; audio.play().catch(() => {}); }
+          };
+
+
+          // ── startTurn ──────────────────────────────────────────────────────
+
+          const startTurn = (side, evt) => {
+
+            if (this.isTurning) return;
+
+            const currentPage = scene.currentAudioPage || 1;
+            const nextPage    = currentPage === 1 ? 2 : 1;
+
+            // Back page shows the destination texture.
+            this.backPage.setAttribute('src',
+              nextPage === 1 ? '#manuscript1' : '#manuscript2');
+            this.backPage.setAttribute('visible', 'true');
+
+            // Flap shows the current page texture; activate correct hinge.
+            const flapEl  = side === 'right' ? this.rightFlap  : this.leftFlap;
+            const hingeEl = side === 'right' ? this.rightHinge : this.leftHinge;
+
+            flapEl.setAttribute('src',
+              currentPage === 1 ? '#manuscript1' : '#manuscript2');
+            hingeEl.object3D.rotation.y = 0;         // guarantee clean start
+            hingeEl.setAttribute('visible', 'true');
+
+            // Hide the folio's own mesh (children keep their materials).
+            // Using setAttribute merge — metalness/roughness are preserved.
+            folio.setAttribute('material', 'opacity: 0; transparent: true');
+
+            this.isTurning        = true;
+            this.turnSide         = side;
+            this.currentAngle     = 0;
+            this.activeController = null;
+
+            if (this.isVR && evt && evt.detail && evt.detail.cursorEl) {
+              this.activeController = evt.detail.cursorEl;
+              this.activeController.object3D.getWorldPosition(this._ctrlPos);
+              this.startX = this._ctrlPos.x;
+            }
 
           };
 
 
-          this.leftCorner.addEventListener('click', triggerFlip);
+          // ── completeTurn ───────────────────────────────────────────────────
+          // Called when triggerup fires at |angle| >= 90°.
 
-          this.rightCorner.addEventListener('click', triggerFlip);
+          const completeTurn = () => {
+
+            playPageTurn();
+
+            const hingeEl = this.turnSide === 'right' ? this.rightHinge : this.leftHinge;
+            const targetY = this.turnSide === 'right' ? 180 : -180;
+
+            this.activeController = null;   // stops tick() tracking
+
+            hingeEl.setAttribute('animation__turn', {
+              property: 'rotation',
+              to:       '0 ' + targetY + ' 0',
+              dur:      300,
+              easing:   'easeInQuad'
+            });
+
+            // 350 ms gives the 300 ms animation a 50 ms safety margin.
+            setTimeout(() => {
+              this.resetTurn();
+              document.querySelector('#swap-button').click();
+            }, 350);
+
+          };
+
+
+          // ── snapBack ───────────────────────────────────────────────────────
+          // Called when triggerup fires at |angle| < 90°.
+
+          const snapBack = () => {
+
+            const hingeEl = this.turnSide === 'right' ? this.rightHinge : this.leftHinge;
+
+            this.activeController = null;   // stops tick() tracking
+
+            hingeEl.setAttribute('animation__turn', {
+              property: 'rotation',
+              to:       '0 0 0',
+              dur:      250,
+              easing:   'easeOutQuad'
+            });
+
+            // 300 ms gives the 250 ms animation a 50 ms safety margin.
+            setTimeout(() => {
+              this.resetTurn();
+            }, 300);
+
+          };
+
+
+          // ── Corner mousedown handlers ──────────────────────────────────────
+
+          this.rightCorner.addEventListener('mousedown', (evt) => {
+            evt.stopPropagation();      // prevent drag-rotate from activating
+            if (this.isVR) {
+              startTurn('right', evt);
+            } else {
+              // Desktop: instant swap + sound.
+              playPageTurn();
+              document.querySelector('#swap-button').click();
+            }
+          });
+
+          this.leftCorner.addEventListener('mousedown', (evt) => {
+            evt.stopPropagation();
+            if (this.isVR) {
+              startTurn('left', evt);
+            } else {
+              playPageTurn();
+              document.querySelector('#swap-button').click();
+            }
+          });
+
+
+          // ── Trigger-release handlers ───────────────────────────────────────
+          // Bound to both controllers so release is caught even if the laser
+          // drifts off the corner zone during the drag.
+
+          scene.addEventListener('loaded', () => {
+
+            const rightCtrl = document.querySelector('[laser-controls="hand: right"]');
+            const leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
+
+            const onTriggerUp = () => {
+              if (!this.isTurning || !this.isVR) return;
+              if (Math.abs(this.currentAngle) >= 90) {
+                completeTurn();
+              } else {
+                snapBack();
+              }
+            };
+
+            if (rightCtrl) rightCtrl.addEventListener('triggerup', onTriggerUp);
+            if (leftCtrl)  leftCtrl.addEventListener('triggerup',  onTriggerUp);
+
+          });
+
+        },
+
+
+        // ── resetTurn ─────────────────────────────────────────────────────────
+        // Restores the folio and hides all page-turn geometry.
+        // Only opacity / transparent are set on the folio material so that
+        // metalness / roughness from the MATERIAL button toggle are preserved.
+
+        resetTurn: function () {
+
+          const folio = this.el;
+
+          folio.setAttribute('material', 'opacity: 1; transparent: false');
+
+          this.rightHinge.setAttribute('visible', 'false');
+          this.leftHinge.setAttribute('visible',  'false');
+          this.backPage.setAttribute('visible',   'false');
+
+          // Reset rotations so the next turn starts clean.
+          this.rightHinge.object3D.rotation.y = 0;
+          this.leftHinge.object3D.rotation.y  = 0;
+
+          this.isTurning        = false;
+          this.turnSide         = null;
+          this.activeController = null;
+          this.currentAngle     = 0;
+
+        },
+
+
+        // ── tick ──────────────────────────────────────────────────────────────
+        // Maps controller world-X delta to hinge rotation.
+        //
+        // Right turn: user drags left → deltaX negative → rawAngle positive
+        //             → hinge sweeps 0° → +180°  ✓
+        // Left  turn: user drags right → deltaX positive → rawAngle negative
+        //             → hinge sweeps 0° → -180°  ✓
+
+        tick: function () {
+
+          if (!this.isTurning || !this.isVR || !this.activeController) return;
+
+          this.activeController.object3D.getWorldPosition(this._ctrlPos);
+
+          const deltaX      = this._ctrlPos.x - this.startX;
+          const sensitivity = 400;              // degrees per metre of hand travel
+          const rawAngle    = -deltaX * sensitivity;
+
+          if (this.turnSide === 'right') {
+            this.currentAngle = Math.max(0,    Math.min(180,  rawAngle));
+          } else {
+            this.currentAngle = Math.max(-180, Math.min(0,    rawAngle));
+          }
+
+          const hingeEl = this.turnSide === 'right' ? this.rightHinge : this.leftHinge;
+          hingeEl.object3D.rotation.y = THREE.MathUtils.degToRad(this.currentAngle);
 
         }
 
@@ -269,9 +552,7 @@
       /**
        * COMPONENT: DESKTOP DRAG ROTATE (ZOOM TILT FIX)
        * ----------------------------------------------
-       * Fixed to use movementX/Y. This ensures the folio can tilt
-       * even when zoomed in close to the camera.
-       * Restricted to +/- 30 degrees.
+       * Fixed to use movementX/Y. Restricted to +/- 30 degrees.
        */
 
       AFRAME.registerComponent('drag-rotate', {
@@ -280,8 +561,6 @@
 
           this.ifMouseDown = false;
 
-          // Track VR mode so drag-rotate is completely inactive in VR.
-          // vr-grab-rotate handles all folio interaction in VR instead.
           this.isVR = false;
 
           this.el.sceneEl.addEventListener('enter-vr', () => { this.isVR = true; });
@@ -290,16 +569,11 @@
 
           this.el.addEventListener('mousedown', () => {
 
-            // Only activate on desktop — ignore if in VR
             if (!this.isVR) this.ifMouseDown = true;
 
           });
 
-          this.onMouseUp = () => {
-
-            this.ifMouseDown = false;
-
-          };
+          this.onMouseUp = () => { this.ifMouseDown = false; };
 
           this.onMouseMove = (e) => {
 
@@ -307,29 +581,15 @@
 
               let rotation = this.el.getAttribute('rotation');
 
-              // movementX and movementY track relative motion
-
               let deltaX = (e.movementX !== undefined ? e.movementX : 0) * 0.15;
 
               let deltaY = (e.movementY !== undefined ? e.movementY : 0) * 0.15;
-
-
-              // Clamp X and Y to +/- 30 degrees
 
               let nextX = Math.max(-30, Math.min(30, rotation.x + deltaY));
 
               let nextY = Math.max(-30, Math.min(30, rotation.y + deltaX));
 
-
-              this.el.setAttribute('rotation', {
-
-                x: nextX,
-
-                y: nextY,
-
-                z: 0
-
-              });
+              this.el.setAttribute('rotation', { x: nextX, y: nextY, z: 0 });
 
             }
 
@@ -354,10 +614,9 @@
 
       /**
        * COMPONENT: CANDLE FLICKER — ENHANCED
-       * -------------------------------------
-       * Option 1: Position micro-drift (two overlapping sine waves per axis).
-       * Option 2: Organic intensity curve (slow breath + fast flutter + noise).
-       * Option 3: Colour temperature variation (warm dim → cool bright).
+       * Option 1: Position micro-drift.
+       * Option 2: Organic intensity curve.
+       * Option 3: Colour temperature variation.
        */
 
       AFRAME.registerComponent('flicker', {
@@ -448,10 +707,13 @@
       /**
        * COMPONENT: FOLIO HOTSPOTS
        * -------------------------
-       * Creates two independent hotspots on the folio. Each has an
-       * invisible detection zone and a subtle translucent sunset-gold
-       * glow ring shown on hover. A/X buttons toggle the aimed-at panel.
-       * The trigger tilts the folio freely — no grab-block flag is set.
+       * Tick-based raycaster approach — no zone planes, no visual
+       * indicators. Completely invisible hotspots that never interfere
+       * with the folio tilt or haptic feedback.
+       *
+       * tick() checks both controller raycasters' intersections with
+       * the folio and converts the hit point to folio-local coordinates.
+       * A/X buttons toggle the panel whose zone is currently aimed at.
        */
 
       AFRAME.registerComponent('folio-hotspots', {
@@ -460,51 +722,18 @@
 
           const folio = this.el;
 
-          let targetedPanel = null;
+          this.targetedPanel = null;
+
+          this.zones = [];
+
+          this._localPt = new THREE.Vector3();
+
+          this.rightCtrl = null;
+
+          this.leftCtrl  = null;
 
 
-          const makeHotspot = (zonePos, panelPos, labelText) => {
-
-
-            // Invisible detection zone — clickable so laser detects hover.
-
-            const zone = document.createElement('a-plane');
-
-            zone.setAttribute('position', zonePos);
-
-            zone.setAttribute('width', '0.25');
-
-            zone.setAttribute('height', '0.20');
-
-            zone.setAttribute('material', 'opacity: 0; transparent: true; side: double');
-
-            zone.classList.add('clickable');
-
-            zone.classList.add('hotspot-zone');
-
-            // Glow ring — subtle translucent halo, child of the zone.
-            // 75% of original band width: radiusOuter 0.10 + 0.0225 = 0.1225.
-            // Sunset gold: warm amber colour, very low opacity so barely
-            // visible — just enough to guide the user without distracting.
-
-            const glowRing = document.createElement('a-ring');
-
-            glowRing.setAttribute('radius-inner', '0.10');
-
-            glowRing.setAttribute('radius-outer', '0.1225');
-
-            glowRing.setAttribute('position', '0 0 0.001');
-
-            glowRing.setAttribute('material',
-
-              'color: #FF8C00; emissive: #CC4400; emissiveIntensity: 0.3; side: double; transparent: true; opacity: 0.28');
-
-            glowRing.setAttribute('visible', 'false');
-
-            zone.appendChild(glowRing);
-
-            folio.appendChild(zone);
-
+          const makeHotspot = (cx, cy, panelPos, labelText) => {
 
             // Info panel — no clickable class, trigger cannot touch it.
 
@@ -543,69 +772,124 @@
             folio.appendChild(panel);
 
 
-            // When laser enters this zone, mark the active panel and show
-            // the subtle glow ring. The tilt/haptic flag is NOT set here —
-            // A/X buttons handle the panel; the trigger tilts freely.
+            this.zones.push({
 
-            zone.addEventListener('mouseenter', () => {
+              cx:        cx,
 
-              targetedPanel = panel;
+              cy:        cy,
 
-              glowRing.setAttribute('visible', 'true');
+              halfW:     0.125,
 
-            });
+              halfH:     0.10,
 
+              panel:     panel,
 
-            // When laser leaves, clear the targeted panel and hide the ring.
-
-            zone.addEventListener('mouseleave', () => {
-
-              if (targetedPanel === panel) targetedPanel = null;
-
-              glowRing.setAttribute('visible', 'false');
+              panelOpen: false
 
             });
-
-
-            return panel;
 
           };
 
 
-          // Right hotspot — zone centre-right, panel above zone
+          // Right hotspot: zone centre (0.24, -0.02), panel above at (0.24, 0.17)
 
-          makeHotspot('0.24 -0.02 0.06', '0.24 0.17 0.06', 'Info. test one');
-
-
-          // Left hotspot — zone centre-left, panel above zone
-
-          makeHotspot('-0.24 -0.02 0.06', '-0.24 0.17 0.06', 'Info. test two');
+          makeHotspot(0.24, -0.02, '0.24 0.17 0.06', 'Info. test one');
 
 
-          // Toggle ONLY the currently-targeted panel.
+          // Left hotspot: zone centre (-0.24, -0.02), panel above at (-0.24, 0.17)
+
+          makeHotspot(-0.24, -0.02, '-0.24 0.17 0.06', 'Info. test two');
+
+
+          // Toggle the currently-targeted panel.
 
           const toggle = () => {
 
-            if (!targetedPanel) return;
+            if (!this.targetedPanel) return;
 
-            const isVisible = targetedPanel.getAttribute('visible');
+            const zone = this.zones.find(z => z.panel === this.targetedPanel);
 
-            targetedPanel.setAttribute('visible', !isVisible);
+            if (!zone) return;
+
+            zone.panelOpen = !zone.panelOpen;
+
+            zone.panel.setAttribute('visible', zone.panelOpen);
 
           };
 
 
           this.el.sceneEl.addEventListener('loaded', () => {
 
-            const rightCtrl = document.querySelector('[laser-controls="hand: right"]');
+            this.rightCtrl = document.querySelector('[laser-controls="hand: right"]');
 
-            const leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
+            this.leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
 
-            if (rightCtrl) rightCtrl.addEventListener('abuttondown', toggle);
+            if (this.rightCtrl) this.rightCtrl.addEventListener('abuttondown', toggle);
 
-            if (leftCtrl)  leftCtrl.addEventListener('xbuttondown',  toggle);
+            if (this.leftCtrl)  this.leftCtrl.addEventListener('xbuttondown',  toggle);
 
           });
+
+        },
+
+
+        tick: function () {
+
+          const folio   = this.el;
+
+          const ctrls   = [this.rightCtrl, this.leftCtrl];
+
+          let hitZoneIdx = -1;
+
+
+          for (let c = 0; c < ctrls.length; c++) {
+
+            const ctrl = ctrls[c];
+
+            if (!ctrl) continue;
+
+            const rc = ctrl.components && ctrl.components.raycaster;
+
+            if (!rc || !rc.intersectedEls) continue;
+
+            const idx = rc.intersectedEls.indexOf(folio);
+
+            if (idx < 0 || !rc.intersections[idx]) continue;
+
+
+            this._localPt.copy(rc.intersections[idx].point);
+
+            folio.object3D.worldToLocal(this._localPt);
+
+
+            for (let i = 0; i < this.zones.length; i++) {
+
+              const z = this.zones[i];
+
+              if (
+
+                Math.abs(this._localPt.x - z.cx) <= z.halfW &&
+
+                Math.abs(this._localPt.y - z.cy) <= z.halfH
+
+              ) {
+
+                hitZoneIdx = i;
+
+                break;
+
+              }
+
+            }
+
+            if (hitZoneIdx >= 0) break;
+
+          }
+
+
+          // Expose the currently aimed-at panel for the toggle function.
+
+          this.targetedPanel = hitZoneIdx >= 0 ? this.zones[hitZoneIdx].panel : null;
 
         }
 
@@ -616,9 +900,7 @@
        * COMPONENT: PANEL AUDIO
        * ----------------------
        * Attaches to the translation and transcription panel entities.
-       * Creates an invisible clickable detection zone covering the panel
-       * text body. Fires strong haptic feedback (0.65, 80ms) when the
-       * laser enters the zone — no glow ring on these panels.
+       * Invisible clickable zone fires strong haptic (0.65, 80ms) on hover.
        * A/X buttons toggle audio playback for the current folio page.
        *
        * Schema:
@@ -646,12 +928,6 @@
           let isTargeted = false;
 
 
-          // Invisible detection zone covering the panel text body.
-
-          // Clickable so the laser raycaster fires mouseenter/mouseleave.
-
-          // The trigger is never used — only A/X buttons control audio.
-
           const zone = document.createElement('a-plane');
 
           zone.setAttribute('width', '1.0');
@@ -666,9 +942,6 @@
 
           panel.appendChild(zone);
 
-
-          // Helper: fire a strong haptic pulse when the laser enters the
-          // zone. Intensity 0.65 / 80ms is clearly felt but not jarring.
 
           const pulseHaptic = (evt) => {
 
@@ -706,8 +979,6 @@
           });
 
 
-          // Returns the correct raw HTML audio element for the current page.
-
           const getAudio = () => {
 
             const page  = scene.currentAudioPage || 1;
@@ -719,9 +990,6 @@
           };
 
 
-          // Toggle play/pause for this panel's audio.
-          // Stops any other panel audio that is already playing.
-
           const toggle = () => {
 
             if (!isTargeted) return;
@@ -730,8 +998,6 @@
 
             if (!audio) return;
 
-
-            // Stop a different panel's audio if it is currently playing.
 
             if (scene.currentPanelAudio && scene.currentPanelAudio !== audio) {
 
@@ -762,8 +1028,6 @@
 
           };
 
-
-          // Bind to A (right controller) and X (left controller).
 
           scene.addEventListener('loaded', () => {
 
@@ -813,8 +1077,6 @@
 
           const hoverTooltip = document.querySelector('#hover-tooltip');
 
-          // Hide the desktop gaze cursor when entering VR (laser controls
-          // are used instead). Restore it when returning to desktop mode.
           const cursor = document.querySelector('#cursor');
 
           this.el.addEventListener('enter-vr', () => cursor.setAttribute('visible', false));
@@ -827,8 +1089,6 @@
           let materialityMode = false;
 
           let currentPage = 1;
-
-          // Expose current page on the scene element so panel-audio can read it.
 
           this.el.currentAudioPage = 1;
 
@@ -861,14 +1121,10 @@
           const eng2 = "Surrounded so gloriously by his companies, he came as far as the place called Bannockburn and pitched his tents there. Against him King Robert, with only a few men in respect to his multitude, trusting in the Lord and taking strength in God, joined mortal battle with the said king of England. And him, with all his pomp and his innumerable power, the Most High assisting, whose it is to give victory, he turned to flight. There the Earl of Gloucester and many nobles of England fell slain. Others were put to flight; others were captured; others were killed in the pits and submerged in the water of Bannockburn. For through the captives, not only was the Queen of Scotland with her people liberated from the prison of the English through the exchange of the captured English nobles, but also all others present in the said war were enriched beyond measure.";
 
 
-          // Initial Text Population
-
           transcrText.setAttribute('value', lat1);
 
           translText.setAttribute('value', eng1);
 
-
-          // Folio Hover Tooltip Event Listeners
 
           folio.addEventListener('mouseenter', () => hoverTooltip.setAttribute('visible', 'true'));
 
@@ -927,11 +1183,7 @@
 
             currentPage = (currentPage === 1) ? 2 : 1;
 
-            // Keep the scene-level page flag in sync for panel-audio.
-
             this.el.currentAudioPage = currentPage;
-
-            // Stop any panel audio that is playing when the page changes.
 
             if (this.el.currentPanelAudio) {
 
@@ -1002,8 +1254,6 @@
           });
 
 
-          // Click listener for Chrome/Mobile audio auto-play policy
-
           window.addEventListener('click', () => {
 
             if (soundEl.components.sound) soundEl.components.sound.playSound();
@@ -1034,6 +1284,8 @@
         <audio id="music-track" src="chant.mp3" preload="auto"></audio>
 
         <audio id="click-track" src="click.mp3" preload="auto"></audio>
+
+        <audio id="pageturn-track" src="pageturn1.mp3" preload="auto"></audio>
 
         <!-- Panel audio: one file per text panel per folio page.        -->
         <!-- Replace the src filenames with your actual audio filenames. -->
@@ -1083,7 +1335,7 @@
 
       <a-entity id="zoom-anchor" position="0 1.1 -1.4">
 
-          <a-plane id="folio-object" class="clickable" drag-rotate vr-grab-rotate page-corners folio-hotspots src="#manuscript1"
+          <a-plane id="folio-object" class="clickable" drag-rotate vr-grab-rotate page-turn folio-hotspots src="#manuscript1"
 
                    position="0 0 0" rotation="0 0 0" width="1.1" height="0.8"
 
