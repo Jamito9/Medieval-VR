@@ -213,30 +213,33 @@
        * ── Desktop ──────────────────────────────────────────────────────────
        * Click either bottom corner zone → instant swap + sound.
        *
+       * ── Bug fixes applied ────────────────────────────────────────────────
+       * FIX 1 — SWAP PAGE broken:
+       *   Previous versions used folio.setAttribute('material', 'opacity:...')
+       *   to hide/show the folio during a curl. A-Frame's string-form
+       *   setAttribute merges into the material component and was corrupting
+       *   the internal src state that folio.setAttribute('src',...) relies on.
+       *   Fix: use direct Three.js folioMesh.material manipulation for opacity
+       *   only. This bypasses A-Frame's material component entirely and cannot
+       *   affect src or any other property.
+       *
+       * FIX 2 — Curl not firing in VR:
+       *   The isFolioHit guard required the raycaster intersectedEls list to
+       *   contain the folio on the exact same frame as the button press. This
+       *   was too strict — the list can be empty or stale on that frame.
+       *   Fix: removed isFolioHit guard. isHotspotTargeted() is sufficient
+       *   for disambiguation; the user's intent is clear from pressing A/X.
+       *
+       * FIX 3 — Folio stuck transparent on exit-vr:
+       *   If the user exits VR mid-curl, isCurling stayed true and the folio
+       *   remained transparent permanently.
+       *   Fix: exit-vr handler now calls resetCurl() if isCurling is true.
+       *
        * ── Isolation guarantees ─────────────────────────────────────────────
-       * 1. Trigger isolation: curl uses A/X buttons only. Trigger is
-       *    100 % dedicated to vr-grab-rotate (tilt) and haptic feedback.
-       *
-       * 2. Raycaster isolation: on enter-vr the 'clickable' class is removed
-       *    from both corner zones so they are invisible to the raycaster in
-       *    VR. The folio body receives all laser hits cleanly. On exit-vr the
-       *    class is restored for desktop use.
-       *
-       * 3. folio-hotspots isolation: the abuttondown/xbuttondown handler
-       *    reads folio.components['folio-hotspots'].targetedPanel before
-       *    starting a curl. If a hotspot is targeted the hotspot toggle fires
-       *    and curl does not start. Additionally the handler checks that the
-       *    controller's raycaster is currently intersecting the folio — so
-       *    pressing A while pointing at a text panel does nothing.
-       *
-       * ── Geometry ─────────────────────────────────────────────────────────
-       * curlMesh  THREE.PlaneGeometry(1.1, 0.8, 50, 1). 50 column segments
-       *           give a smooth arc. 1 row is sufficient (curl is in X only).
-       *           Added to folio.object3D at z = +0.001 (1 mm in front).
-       *           MeshStandardMaterial, DoubleSide, synced texture.
-       *
-       * backPage  a-plane at z = -0.004. Shows destination texture.
-       *           Child of folio → inherits all tilt and zoom transforms.
+       * Trigger: 100 % dedicated to vr-grab-rotate (tilt). Curl uses A/X.
+       * Raycaster: corners have clickable removed in VR via enter-vr.
+       * Hotspots: isHotspotTargeted() check ensures A/X still toggles panels
+       *   when aimed at a hotspot zone — curl does not start in that case.
        *
        * ── Rolling-cylinder formula ──────────────────────────────────────────
        * R = 0.04 m (4 cm radius).  Arc width = π × R ≈ 12.6 cm.
@@ -276,15 +279,18 @@
 
           scene.addEventListener('enter-vr', () => {
             this.isVR = true;
-            // Remove clickable from corners in VR so the raycaster reaches
-            // the folio body cleanly. Tilt and haptics are unaffected.
+            // Remove clickable from corners in VR so the folio body receives
+            // all raycaster hits cleanly.
             this.rightCorner.classList.remove('clickable');
             this.leftCorner.classList.remove('clickable');
           });
 
           scene.addEventListener('exit-vr', () => {
             this.isVR = false;
-            // Restore for desktop use.
+            // FIX 3: if a curl was in progress when the user exits VR,
+            // reset it so the folio is never left in a transparent state.
+            if (this.isCurling) { this.resetCurl(); }
+            // Restore corner clickable class for desktop use.
             this.rightCorner.classList.add('clickable');
             this.leftCorner.classList.add('clickable');
           });
@@ -360,6 +366,9 @@
 
 
           // ── startCurl ─────────────────────────────────────────────────────
+          // FIX 1: opacity is now set directly on the Three.js mesh material,
+          // NOT via folio.setAttribute('material', ...). This bypasses A-Frame's
+          // material component entirely so src is never touched or corrupted.
 
           const startCurl = (side, controllerEl) => {
 
@@ -368,7 +377,7 @@
             const currentPage = scene.currentAudioPage || 1;
             const nextPage    = currentPage === 1 ? 2 : 1;
 
-            // Sync curl mesh texture and material from the folio.
+            // Sync curl mesh texture and material properties from the folio.
             const folioMesh = folio.getObject3D('mesh');
             if (folioMesh && folioMesh.material) {
               if (folioMesh.material.map) {
@@ -384,10 +393,15 @@
               nextPage === 1 ? '#manuscript1' : '#manuscript2');
             this.backPage.setAttribute('visible', 'true');
 
-            // Show curl mesh; make folio transparent.
-            // String-form setAttribute merges → metalness/roughness preserved.
+            // FIX 1: hide folio via direct Three.js — never touches A-Frame
+            // material component, so src property is completely unaffected.
+            if (folioMesh && folioMesh.material) {
+              folioMesh.material.transparent = true;
+              folioMesh.material.opacity     = 0;
+              folioMesh.material.needsUpdate = true;
+            }
+
             this.curlMesh.visible = true;
-            folio.setAttribute('material', 'opacity: 0; transparent: true');
 
             this.isCurling        = true;
             this.curlSide         = side;
@@ -464,7 +478,7 @@
           };
 
 
-          // ── Desktop corner click handlers ─────────────────────────────────
+          // ── Desktop corner mousedown handlers ─────────────────────────────
           // In VR the corners have no 'clickable' class so these never fire.
 
           this.rightCorner.addEventListener('mousedown', (evt) => {
@@ -485,24 +499,21 @@
 
 
           // ── VR A/X button handlers ────────────────────────────────────────
-          // Bound after scene loaded so controller entities exist.
           // Guards (in order):
           //   1. Must be in VR and not already curling.
-          //   2. Controller raycaster must be intersecting the folio — so
-          //      pressing A while pointing at a text panel does nothing.
-          //   3. folio-hotspots must not have a panel targeted — if a
-          //      hotspot annotation is aimed at, that takes priority.
+          //   2. folio-hotspots must not have a panel targeted — if a hotspot
+          //      annotation is aimed at, that takes priority and curl does not
+          //      start.
+          //
+          // FIX 2: isFolioHit guard removed. It required the raycaster
+          // intersectedEls list to contain the folio on the exact same frame
+          // as the button press, which was too strict and caused startCurl()
+          // to silently never fire. isHotspotTargeted() is sufficient.
 
           scene.addEventListener('loaded', () => {
 
             const rightCtrl = document.querySelector('[laser-controls="hand: right"]');
             const leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
-
-            const isFolioHit = (ctrl) => {
-              const rc = ctrl.components && ctrl.components.raycaster;
-              if (!rc || !rc.intersectedEls) return false;
-              return rc.intersectedEls.indexOf(folio) >= 0;
-            };
 
             const isHotspotTargeted = () => {
               const hs = folio.components['folio-hotspots'];
@@ -514,14 +525,13 @@
             if (rightCtrl) {
 
               rightCtrl.addEventListener('abuttondown', () => {
-                if (!this.isVR || this.isCurling)       return;
-                if (!isFolioHit(rightCtrl))             return;
-                if (isHotspotTargeted())                return;
+                if (!this.isVR || this.isCurling) return;
+                if (isHotspotTargeted())           return;
                 startCurl('right', rightCtrl);
               });
 
               rightCtrl.addEventListener('abuttonup', () => {
-                if (!this.isCurling || !this.isVR)      return;
+                if (!this.isCurling || !this.isVR) return;
                 if (this.peelProgress >= 0.5) {
                   completeCurl();
                 } else {
@@ -536,14 +546,13 @@
             if (leftCtrl) {
 
               leftCtrl.addEventListener('xbuttondown', () => {
-                if (!this.isVR || this.isCurling)       return;
-                if (!isFolioHit(leftCtrl))              return;
-                if (isHotspotTargeted())                return;
+                if (!this.isVR || this.isCurling) return;
+                if (isHotspotTargeted())           return;
                 startCurl('left', leftCtrl);
               });
 
               leftCtrl.addEventListener('xbuttonup', () => {
-                if (!this.isCurling || !this.isVR)      return;
+                if (!this.isCurling || !this.isVR) return;
                 if (this.peelProgress >= 0.5) {
                   completeCurl();
                 } else {
@@ -624,15 +633,25 @@
         /**
          * resetCurl
          * ---------
-         * Restores folio and hides curl geometry.
-         * String-form setAttribute merges — metalness/roughness preserved.
+         * Restores folio and hides all curl geometry.
+         * FIX 1: folio opacity is restored via direct Three.js manipulation,
+         * not via folio.setAttribute('material', ...). This guarantees that
+         * A-Frame's material component src state is never touched, so the
+         * SWAP PAGE button continues to work correctly after every curl.
          */
 
         resetCurl: function () {
 
-          const folio   = this.el;
+          const folio    = this.el;
+          const folioMesh = folio.getObject3D('mesh');
 
-          folio.setAttribute('material', 'opacity: 1; transparent: false');
+          // FIX 1: restore opacity directly — A-Frame material component
+          // and its src property are completely untouched.
+          if (folioMesh && folioMesh.material) {
+            folioMesh.material.opacity     = 1;
+            folioMesh.material.transparent = false;
+            folioMesh.material.needsUpdate = true;
+          }
 
           this.curlMesh.visible = false;
           this.backPage.setAttribute('visible', 'false');
