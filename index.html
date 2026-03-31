@@ -206,40 +206,24 @@
        * Release A/X at ≥ 50 % progress → completeCurl → swap + sound.
        * Release A/X at  < 50 % progress → snapBack   → no swap.
        *
-       * Using A/X instead of the trigger means tilt (vr-grab-rotate) and
-       * haptic feedback are completely unaffected — they use the trigger
-       * exclusively and share zero input with the curl.
-       *
        * ── Desktop ──────────────────────────────────────────────────────────
        * Click either bottom corner zone → instant swap + sound.
        *
-       * ── Bug fixes applied ────────────────────────────────────────────────
-       * FIX 1 — SWAP PAGE broken:
-       *   Previous versions used folio.setAttribute('material', 'opacity:...')
-       *   to hide/show the folio during a curl. A-Frame's string-form
-       *   setAttribute merges into the material component and was corrupting
-       *   the internal src state that folio.setAttribute('src',...) relies on.
-       *   Fix: use direct Three.js folioMesh.material manipulation for opacity
-       *   only. This bypasses A-Frame's material component entirely and cannot
-       *   affect src or any other property.
-       *
-       * FIX 2 — Curl not firing in VR:
-       *   The isFolioHit guard required the raycaster intersectedEls list to
-       *   contain the folio on the exact same frame as the button press. This
-       *   was too strict — the list can be empty or stale on that frame.
-       *   Fix: removed isFolioHit guard. isHotspotTargeted() is sufficient
-       *   for disambiguation; the user's intent is clear from pressing A/X.
-       *
-       * FIX 3 — Folio stuck transparent on exit-vr:
-       *   If the user exits VR mid-curl, isCurling stayed true and the folio
-       *   remained transparent permanently.
-       *   Fix: exit-vr handler now calls resetCurl() if isCurling is true.
-       *
        * ── Isolation guarantees ─────────────────────────────────────────────
        * Trigger: 100 % dedicated to vr-grab-rotate (tilt). Curl uses A/X.
-       * Raycaster: corners have clickable removed in VR via enter-vr.
-       * Hotspots: isHotspotTargeted() check ensures A/X still toggles panels
-       *   when aimed at a hotspot zone — curl does not start in that case.
+       * Raycaster: corners have clickable removed in VR via enter-vr so
+       *   the folio body receives all laser hits cleanly.
+       * Hotspots: isHotspotTargeted() check — if a hotspot panel is aimed
+       *   at, A/X toggles the hotspot and curl does not start.
+       * Opacity: folio transparency during curl is set directly on the
+       *   Three.js mesh material (not via A-Frame setAttribute), so A-Frame's
+       *   material component src state is never touched and SWAP PAGE always
+       *   works correctly.
+       * Animation abort: completeCurl and snapBack each capture curlSide as a
+       *   local constant and check this._animAborted before the final swap/
+       *   reset call. resetCurl() sets _animAborted = true, so if exit-vr or
+       *   any other abort fires mid-animation the rAF loop bails out cleanly
+       *   and #swap-button is never called erroneously.
        *
        * ── Rolling-cylinder formula ──────────────────────────────────────────
        * R = 0.04 m (4 cm radius).  Arc width = π × R ≈ 12.6 cm.
@@ -276,21 +260,21 @@
           this.isVR             = false;
           this._ctrlPos         = new THREE.Vector3();
           this.R                = 0.04;     // curl radius in metres
+          this._animAborted     = false;    // abort flag for rAF loops
+
 
           scene.addEventListener('enter-vr', () => {
             this.isVR = true;
-            // Remove clickable from corners in VR so the folio body receives
-            // all raycaster hits cleanly.
             this.rightCorner.classList.remove('clickable');
             this.leftCorner.classList.remove('clickable');
           });
 
           scene.addEventListener('exit-vr', () => {
             this.isVR = false;
-            // FIX 3: if a curl was in progress when the user exits VR,
-            // reset it so the folio is never left in a transparent state.
+            // If a curl was in progress, abort it cleanly.
+            // resetCurl() sets _animAborted = true, which causes any running
+            // rAF animation to bail out before it can call #swap-button.click().
             if (this.isCurling) { this.resetCurl(); }
-            // Restore corner clickable class for desktop use.
             this.rightCorner.classList.add('clickable');
             this.leftCorner.classList.add('clickable');
           });
@@ -338,7 +322,8 @@
 
 
           // ── Corner zones ──────────────────────────────────────────────────
-          // Desktop only (clickable class removed in VR via enter-vr above).
+          // Desktop only. In VR the clickable class is removed in enter-vr
+          // so the folio body receives all raycaster hits unobstructed.
 
           this.rightCorner = document.createElement('a-plane');
           this.rightCorner.setAttribute('position', '0.4 -0.3 0.01');
@@ -366,9 +351,10 @@
 
 
           // ── startCurl ─────────────────────────────────────────────────────
-          // FIX 1: opacity is now set directly on the Three.js mesh material,
-          // NOT via folio.setAttribute('material', ...). This bypasses A-Frame's
-          // material component entirely so src is never touched or corrupted.
+          // Folio opacity is controlled via direct Three.js mesh manipulation,
+          // not via folio.setAttribute('material', ...).
+          // This means A-Frame's material component src state is never touched,
+          // so the SWAP PAGE button works correctly after every curl.
 
           const startCurl = (side, controllerEl) => {
 
@@ -377,7 +363,6 @@
             const currentPage = scene.currentAudioPage || 1;
             const nextPage    = currentPage === 1 ? 2 : 1;
 
-            // Sync curl mesh texture and material properties from the folio.
             const folioMesh = folio.getObject3D('mesh');
             if (folioMesh && folioMesh.material) {
               if (folioMesh.material.map) {
@@ -388,13 +373,12 @@
               this.curlMat.roughness = folioMesh.material.roughness;
             }
 
-            // Show destination texture on back page.
             this.backPage.setAttribute('src',
               nextPage === 1 ? '#manuscript1' : '#manuscript2');
             this.backPage.setAttribute('visible', 'true');
 
-            // FIX 1: hide folio via direct Three.js — never touches A-Frame
-            // material component, so src property is completely unaffected.
+            // Hide folio via Three.js directly — never touches A-Frame
+            // material component, so src is completely unaffected.
             if (folioMesh && folioMesh.material) {
               folioMesh.material.transparent = true;
               folioMesh.material.opacity     = 0;
@@ -402,6 +386,7 @@
             }
 
             this.curlMesh.visible = true;
+            this._animAborted     = false;
 
             this.isCurling        = true;
             this.curlSide         = side;
@@ -418,28 +403,37 @@
 
 
           // ── completeCurl ──────────────────────────────────────────────────
+          // curlSide is captured as a local constant so that if resetCurl()
+          // nulls this.curlSide mid-animation the loop still renders correctly.
+          // _animAborted is checked before the final swap to prevent an
+          // erroneously triggered page swap after an aborted animation.
 
           const completeCurl = () => {
 
             playPageTurn();
 
-            this.activeController = null;   // stop tick() tracking
+            this.activeController = null;
 
-            const startProg = this.peelProgress;
-            const startTime = performance.now();
-            const duration  = 300;
+            const startProg  = this.peelProgress;
+            const capturedSide = this.curlSide;   // capture before possible null
+            const startTime  = performance.now();
+            const duration   = 300;
 
             const animate = (now) => {
+
+              if (this._animAborted) return;    // bail if reset fired mid-flight
+
               const t     = Math.min((now - startTime) / duration, 1);
-              const eased = t * (2 - t);    // ease-out quad
+              const eased = t * (2 - t);        // ease-out quad
 
               this.peelProgress = startProg + (1 - startProg) * eased;
-              this.updateCurl(this.peelProgress, this.curlSide);
+              this.updateCurl(this.peelProgress, capturedSide);
 
               if (t < 1) {
                 requestAnimationFrame(animate);
               } else {
                 setTimeout(() => {
+                  if (this._animAborted) return; // double-check before swap
                   this.resetCurl();
                   document.querySelector('#swap-button').click();
                 }, 50);
@@ -451,26 +445,34 @@
 
 
           // ── snapBack ──────────────────────────────────────────────────────
+          // Same abort-flag and captured-side pattern as completeCurl.
 
           const snapBack = () => {
 
-            this.activeController = null;   // stop tick() tracking
+            this.activeController = null;
 
-            const startProg = this.peelProgress;
-            const startTime = performance.now();
-            const duration  = 250;
+            const startProg    = this.peelProgress;
+            const capturedSide = this.curlSide;   // capture before possible null
+            const startTime    = performance.now();
+            const duration     = 250;
 
             const animate = (now) => {
+
+              if (this._animAborted) return;    // bail if reset fired mid-flight
+
               const t     = Math.min((now - startTime) / duration, 1);
-              const eased = t * (2 - t);    // ease-out quad
+              const eased = t * (2 - t);        // ease-out quad
 
               this.peelProgress = startProg * (1 - eased);
-              this.updateCurl(this.peelProgress, this.curlSide);
+              this.updateCurl(this.peelProgress, capturedSide);
 
               if (t < 1) {
                 requestAnimationFrame(animate);
               } else {
-                setTimeout(() => { this.resetCurl(); }, 50);
+                setTimeout(() => {
+                  if (this._animAborted) return;
+                  this.resetCurl();
+                }, 50);
               }
             };
 
@@ -479,7 +481,6 @@
 
 
           // ── Desktop corner mousedown handlers ─────────────────────────────
-          // In VR the corners have no 'clickable' class so these never fire.
 
           this.rightCorner.addEventListener('mousedown', (evt) => {
             evt.stopPropagation();
@@ -499,16 +500,9 @@
 
 
           // ── VR A/X button handlers ────────────────────────────────────────
-          // Guards (in order):
-          //   1. Must be in VR and not already curling.
-          //   2. folio-hotspots must not have a panel targeted — if a hotspot
-          //      annotation is aimed at, that takes priority and curl does not
-          //      start.
-          //
-          // FIX 2: isFolioHit guard removed. It required the raycaster
-          // intersectedEls list to contain the folio on the exact same frame
-          // as the button press, which was too strict and caused startCurl()
-          // to silently never fire. isHotspotTargeted() is sufficient.
+          // Guards: (1) must be in VR and not already curling.
+          //         (2) folio-hotspots must not have a panel targeted —
+          //             hotspot annotation takes priority over curl.
 
           scene.addEventListener('loaded', () => {
 
@@ -519,8 +513,6 @@
               const hs = folio.components['folio-hotspots'];
               return hs && hs.targetedPanel !== null;
             };
-
-            // ── Right controller — A button ───────────────────────────────
 
             if (rightCtrl) {
 
@@ -540,8 +532,6 @@
               });
 
             }
-
-            // ── Left controller — X button ────────────────────────────────
 
             if (leftCtrl) {
 
@@ -570,8 +560,8 @@
         /**
          * updateCurl
          * ----------
-         * Applies the rolling-cylinder vertex formula to curlGeo each call.
-         * Called from tick() during drag and from the animation loops.
+         * Applies the rolling-cylinder vertex formula to curlGeo.
+         * Called from tick() during drag and from animation loops.
          */
 
         updateCurl: function (peelProgress, side) {
@@ -633,20 +623,19 @@
         /**
          * resetCurl
          * ---------
-         * Restores folio and hides all curl geometry.
-         * FIX 1: folio opacity is restored via direct Three.js manipulation,
-         * not via folio.setAttribute('material', ...). This guarantees that
-         * A-Frame's material component src state is never touched, so the
-         * SWAP PAGE button continues to work correctly after every curl.
+         * Sets _animAborted = true first so any running rAF loop exits
+         * immediately and cannot call #swap-button.click() erroneously.
+         * Restores folio opacity via direct Three.js — A-Frame's material
+         * component and its src property are completely untouched.
          */
 
         resetCurl: function () {
 
-          const folio    = this.el;
+          this._animAborted = true;   // abort any running animation loop
+
+          const folio     = this.el;
           const folioMesh = folio.getObject3D('mesh');
 
-          // FIX 1: restore opacity directly — A-Frame material component
-          // and its src property are completely untouched.
           if (folioMesh && folioMesh.material) {
             folioMesh.material.opacity     = 1;
             folioMesh.material.transparent = false;
@@ -675,9 +664,7 @@
          * ----
          * Maps controller world-X displacement from startX to peelProgress.
          * sensitivity = 2.0: 50 cm hand travel = full page turn.
-         * Only runs while isCurling, isVR, and activeController are all set.
-         * activeController is nulled before animations so tick cannot
-         * interfere with completeCurl or snapBack.
+         * Stops when activeController is nulled by completeCurl or snapBack.
          */
 
         tick: function () {
@@ -1565,3 +1552,5 @@
   </body>
 
 </html>
+
+On Tue, 31 Mar 2026, 08:26 James Gallacher, <james.gallacher94@gmail.com> wrote:
