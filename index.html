@@ -20,7 +20,7 @@
        * -----------------------
        * This component ensures that the information panels always rotate
        * to face the user's camera. This creates an "imaginary line"
-       * connection, ensuring the panels tilt dynamically
+       * connection , ensuring the panels tilt dynamically
        * as the user moves within the VR space or looks around.
        */
 
@@ -199,48 +199,56 @@
        * --------------------
        * Rolling-cylinder vertex deformation page curl. Replaces page-corners.
        *
-       * ── VR input (completely isolated from trigger/tilt) ─────────────────
-       * A button (right controller) → right-side curl (page turns forward).
-       * X button (left  controller) → left-side  curl (page turns backward).
-       * Hold A/X and move controller left/right to drag the peel.
-       * Release A/X at ≥ 50 % progress → completeCurl → swap + sound.
-       * Release A/X at  < 50 % progress → snapBack   → no swap.
+       * ── VR input ─────────────────────────────────────────────────────────
+       * A button (right controller) → right-side curl.
+       * X button (left  controller) → left-side  curl.
+       * Hold A/X and move controller left/right to peel.
+       * Release at ≥ 50 % progress → completeCurl → swap + sound.
+       * Release at  < 50 % progress → snapBack → no swap.
+       *
+       * ── Freeze prevention (two-layer defence) ────────────────────────────
+       * The original freeze was caused by abuttonup/xbuttonup being silently
+       * dropped on Quest 2 under load. If these events are never delivered,
+       * isCurling stays true forever and the scene locks.
+       *
+       * LAYER 1 — Gamepad polling in tick():
+       *   Every frame, tick() reads the physical button state directly from
+       *   the gamepad API (button index 4 = A on right, X on left for Quest 2
+       *   Touch controllers). If the button is no longer pressed but
+       *   activeController is still set, tick() triggers completeCurl or
+       *   snapBack immediately — without waiting for any event. This means
+       *   a missed abuttonup is caught within one frame (~16 ms).
+       *
+       * LAYER 2 — Watchdog timeout:
+       *   startCurl() sets a 3500 ms setTimeout. If isCurling is still true
+       *   when it fires — meaning neither normal completion, snap-back, nor
+       *   polling rescued the situation — resetCurl() is called automatically.
+       *   resetCurl() always clears the watchdog, so it never fires during a
+       *   normal turn.
+       *
+       * abuttonup/xbuttonup events are kept as a fast path. If they fire
+       * correctly they resolve the curl immediately; polling and watchdog
+       * are fallbacks only.
        *
        * ── Desktop ──────────────────────────────────────────────────────────
        * Click either bottom corner zone → instant swap + sound.
        *
        * ── Isolation guarantees ─────────────────────────────────────────────
-       * Trigger: 100 % dedicated to vr-grab-rotate (tilt). Curl uses A/X.
-       * Raycaster: corners have clickable removed in VR via enter-vr so
-       *   the folio body receives all laser hits cleanly.
-       * Hotspots: isHotspotTargeted() check — if a hotspot panel is aimed
-       *   at, A/X toggles the hotspot and curl does not start.
-       * Opacity: folio transparency during curl is set directly on the
-       *   Three.js mesh material (not via A-Frame setAttribute), so A-Frame's
-       *   material component src state is never touched and SWAP PAGE always
-       *   works correctly.
-       * Animation abort: completeCurl and snapBack each capture curlSide as a
-       *   local constant and check this._animAborted before the final swap/
-       *   reset call. resetCurl() sets _animAborted = true, so if exit-vr or
-       *   any other abort fires mid-animation the rAF loop bails out cleanly
-       *   and #swap-button is never called erroneously.
+       * Trigger: 100 % dedicated to vr-grab-rotate. Curl uses A/X only.
+       * Raycaster: corners have clickable removed in VR via enter-vr.
+       * Hotspots: isHotspotTargeted() guard — hotspot toggle takes priority.
+       * Opacity: folio transparency set via direct Three.js only — A-Frame's
+       *   material component src state is never touched, so SWAP PAGE works.
+       * Animation abort: _animAborted flag + captured curlSide prevent rAF
+       *   loops from calling #swap-button after a resetCurl.
        *
        * ── Rolling-cylinder formula ──────────────────────────────────────────
-       * R = 0.04 m (4 cm radius).  Arc width = π × R ≈ 12.6 cm.
-       *
-       * Right-side peel (peelProgress 0 → 1):
-       *   peelX = 0.55 − peelProgress × 1.1
-       *   d = x0 − peelX
-       *   d ≤ 0       flat unpeeled:  x = x0,                z = 0
-       *   0 < d ≤ πR  curl arc:      x = peelX + R·sin(d/R), z = R·(1−cos(d/R))
-       *   d > πR      back face:     x = x0,                 z = −0.002
-       *
-       * Verified:
-       *   d = 0    → x = peelX,    z = 0    (surface contact)     ✓
-       *   d = πR/2 → x = peelX+R, z = R    (top of arc)          ✓
-       *   d = πR   → x = peelX,   z = 2R   (fully curled over)   ✓
-       *
-       * Mirror logic for left-side peel.
+       * R = 0.04 m.  Arc width = π × R ≈ 12.6 cm.
+       * Right peel: peelX = 0.55 − peelProgress × 1.1
+       *   d ≤ 0      → x = x0,                z = 0
+       *   0 < d ≤ πR → x = peelX + R·sin(d/R), z = R·(1−cos(d/R))
+       *   d > πR     → x = x0,                z = −0.002
+       * Mirror for left peel.
        */
 
       AFRAME.registerComponent('page-curl', {
@@ -253,14 +261,15 @@
           // ── State ─────────────────────────────────────────────────────────
 
           this.isCurling        = false;
-          this.curlSide         = null;     // 'right' | 'left'
+          this.curlSide         = null;
           this.activeController = null;
           this.startX           = 0;
           this.peelProgress     = 0;
           this.isVR             = false;
           this._ctrlPos         = new THREE.Vector3();
-          this.R                = 0.04;     // curl radius in metres
-          this._animAborted     = false;    // abort flag for rAF loops
+          this.R                = 0.04;
+          this._animAborted     = false;
+          this._watchdog        = null;   // watchdog timer handle
 
 
           scene.addEventListener('enter-vr', () => {
@@ -271,9 +280,6 @@
 
           scene.addEventListener('exit-vr', () => {
             this.isVR = false;
-            // If a curl was in progress, abort it cleanly.
-            // resetCurl() sets _animAborted = true, which causes any running
-            // rAF animation to bail out before it can call #swap-button.click().
             if (this.isCurling) { this.resetCurl(); }
             this.rightCorner.classList.add('clickable');
             this.leftCorner.classList.add('clickable');
@@ -322,8 +328,6 @@
 
 
           // ── Corner zones ──────────────────────────────────────────────────
-          // Desktop only. In VR the clickable class is removed in enter-vr
-          // so the folio body receives all raycaster hits unobstructed.
 
           this.rightCorner = document.createElement('a-plane');
           this.rightCorner.setAttribute('position', '0.4 -0.3 0.01');
@@ -350,11 +354,82 @@
           };
 
 
+          // ── completeCurl ──────────────────────────────────────────────────
+          // Stored as this._completeCurl so tick() can call it directly.
+          // curlSide captured locally so resetCurl() nulling it mid-flight
+          // does not corrupt the animation. _animAborted checked every frame.
+
+          this._completeCurl = () => {
+
+            playPageTurn();
+
+            this.activeController = null;   // stops tick() polling loop
+
+            const startProg    = this.peelProgress;
+            const capturedSide = this.curlSide;
+            const startTime    = performance.now();
+            const duration     = 300;
+
+            const animate = (now) => {
+              if (this._animAborted) return;
+
+              const t     = Math.min((now - startTime) / duration, 1);
+              const eased = t * (2 - t);
+
+              this.peelProgress = startProg + (1 - startProg) * eased;
+              this.updateCurl(this.peelProgress, capturedSide);
+
+              if (t < 1) {
+                requestAnimationFrame(animate);
+              } else {
+                setTimeout(() => {
+                  if (this._animAborted) return;
+                  this.resetCurl();
+                  document.querySelector('#swap-button').click();
+                }, 50);
+              }
+            };
+
+            requestAnimationFrame(animate);
+          };
+
+
+          // ── snapBack ──────────────────────────────────────────────────────
+          // Stored as this._snapBack so tick() can call it directly.
+
+          this._snapBack = () => {
+
+            this.activeController = null;   // stops tick() polling loop
+
+            const startProg    = this.peelProgress;
+            const capturedSide = this.curlSide;
+            const startTime    = performance.now();
+            const duration     = 250;
+
+            const animate = (now) => {
+              if (this._animAborted) return;
+
+              const t     = Math.min((now - startTime) / duration, 1);
+              const eased = t * (2 - t);
+
+              this.peelProgress = startProg * (1 - eased);
+              this.updateCurl(this.peelProgress, capturedSide);
+
+              if (t < 1) {
+                requestAnimationFrame(animate);
+              } else {
+                setTimeout(() => {
+                  if (this._animAborted) return;
+                  this.resetCurl();
+                }, 50);
+              }
+            };
+
+            requestAnimationFrame(animate);
+          };
+
+
           // ── startCurl ─────────────────────────────────────────────────────
-          // Folio opacity is controlled via direct Three.js mesh manipulation,
-          // not via folio.setAttribute('material', ...).
-          // This means A-Frame's material component src state is never touched,
-          // so the SWAP PAGE button works correctly after every curl.
 
           const startCurl = (side, controllerEl) => {
 
@@ -377,8 +452,7 @@
               nextPage === 1 ? '#manuscript1' : '#manuscript2');
             this.backPage.setAttribute('visible', 'true');
 
-            // Hide folio via Three.js directly — never touches A-Frame
-            // material component, so src is completely unaffected.
+            // Folio opacity via Three.js — never touches A-Frame src state.
             if (folioMesh && folioMesh.material) {
               folioMesh.material.transparent = true;
               folioMesh.material.opacity     = 0;
@@ -399,88 +473,18 @@
             }
 
             this.updateCurl(0, side);
-          };
 
-
-          // ── completeCurl ──────────────────────────────────────────────────
-          // curlSide is captured as a local constant so that if resetCurl()
-          // nulls this.curlSide mid-animation the loop still renders correctly.
-          // _animAborted is checked before the final swap to prevent an
-          // erroneously triggered page swap after an aborted animation.
-
-          const completeCurl = () => {
-
-            playPageTurn();
-
-            this.activeController = null;
-
-            const startProg  = this.peelProgress;
-            const capturedSide = this.curlSide;   // capture before possible null
-            const startTime  = performance.now();
-            const duration   = 300;
-
-            const animate = (now) => {
-
-              if (this._animAborted) return;    // bail if reset fired mid-flight
-
-              const t     = Math.min((now - startTime) / duration, 1);
-              const eased = t * (2 - t);        // ease-out quad
-
-              this.peelProgress = startProg + (1 - startProg) * eased;
-              this.updateCurl(this.peelProgress, capturedSide);
-
-              if (t < 1) {
-                requestAnimationFrame(animate);
-              } else {
-                setTimeout(() => {
-                  if (this._animAborted) return; // double-check before swap
-                  this.resetCurl();
-                  document.querySelector('#swap-button').click();
-                }, 50);
+            // LAYER 2 — Watchdog: if curl is still live after 3500 ms for
+            // any reason, snap back automatically. Cleared in resetCurl().
+            this._watchdog = setTimeout(() => {
+              if (this.isCurling) {
+                this.resetCurl();
               }
-            };
-
-            requestAnimationFrame(animate);
+            }, 3500);
           };
 
 
-          // ── snapBack ──────────────────────────────────────────────────────
-          // Same abort-flag and captured-side pattern as completeCurl.
-
-          const snapBack = () => {
-
-            this.activeController = null;
-
-            const startProg    = this.peelProgress;
-            const capturedSide = this.curlSide;   // capture before possible null
-            const startTime    = performance.now();
-            const duration     = 250;
-
-            const animate = (now) => {
-
-              if (this._animAborted) return;    // bail if reset fired mid-flight
-
-              const t     = Math.min((now - startTime) / duration, 1);
-              const eased = t * (2 - t);        // ease-out quad
-
-              this.peelProgress = startProg * (1 - eased);
-              this.updateCurl(this.peelProgress, capturedSide);
-
-              if (t < 1) {
-                requestAnimationFrame(animate);
-              } else {
-                setTimeout(() => {
-                  if (this._animAborted) return;
-                  this.resetCurl();
-                }, 50);
-              }
-            };
-
-            requestAnimationFrame(animate);
-          };
-
-
-          // ── Desktop corner mousedown handlers ─────────────────────────────
+          // ── Desktop corner handlers ───────────────────────────────────────
 
           this.rightCorner.addEventListener('mousedown', (evt) => {
             evt.stopPropagation();
@@ -499,10 +503,10 @@
           });
 
 
-          // ── VR A/X button handlers ────────────────────────────────────────
-          // Guards: (1) must be in VR and not already curling.
-          //         (2) folio-hotspots must not have a panel targeted —
-          //             hotspot annotation takes priority over curl.
+          // ── VR A/X button event handlers ──────────────────────────────────
+          // These are the fast path. If abuttonup/xbuttonup are delivered
+          // promptly they resolve the curl immediately. If they are dropped,
+          // tick() polling (Layer 1) catches the release within one frame.
 
           scene.addEventListener('loaded', () => {
 
@@ -524,10 +528,11 @@
 
               rightCtrl.addEventListener('abuttonup', () => {
                 if (!this.isCurling || !this.isVR) return;
+                if (!this.activeController)        return; // tick() already handled it
                 if (this.peelProgress >= 0.5) {
-                  completeCurl();
+                  this._completeCurl();
                 } else {
-                  snapBack();
+                  this._snapBack();
                 }
               });
 
@@ -543,10 +548,11 @@
 
               leftCtrl.addEventListener('xbuttonup', () => {
                 if (!this.isCurling || !this.isVR) return;
+                if (!this.activeController)        return; // tick() already handled it
                 if (this.peelProgress >= 0.5) {
-                  completeCurl();
+                  this._completeCurl();
                 } else {
-                  snapBack();
+                  this._snapBack();
                 }
               });
 
@@ -560,8 +566,7 @@
         /**
          * updateCurl
          * ----------
-         * Applies the rolling-cylinder vertex formula to curlGeo.
-         * Called from tick() during drag and from animation loops.
+         * Rolling-cylinder vertex deformation applied to curlGeo.
          */
 
         updateCurl: function (peelProgress, side) {
@@ -581,33 +586,15 @@
             let x, z;
 
             if (side === 'right') {
-
               const d = x0 - peelX;
-
-              if (d <= 0) {
-                x = x0;  z = 0;
-              } else if (d <= piR) {
-                const angle = d / R;
-                x = peelX + R * Math.sin(angle);
-                z = R * (1 - Math.cos(angle));
-              } else {
-                x = x0;  z = -0.002;
-              }
-
+              if      (d <= 0)    { x = x0;  z = 0; }
+              else if (d <= piR)  { const a = d / R; x = peelX + R * Math.sin(a); z = R * (1 - Math.cos(a)); }
+              else                { x = x0;  z = -0.002; }
             } else {
-
               const d = peelX - x0;
-
-              if (d <= 0) {
-                x = x0;  z = 0;
-              } else if (d <= piR) {
-                const angle = d / R;
-                x = peelX - R * Math.sin(angle);
-                z = R * (1 - Math.cos(angle));
-              } else {
-                x = x0;  z = -0.002;
-              }
-
+              if      (d <= 0)    { x = x0;  z = 0; }
+              else if (d <= piR)  { const a = d / R; x = peelX - R * Math.sin(a); z = R * (1 - Math.cos(a)); }
+              else                { x = x0;  z = -0.002; }
             }
 
             posAttr.setXYZ(i, x, y0, z);
@@ -623,15 +610,16 @@
         /**
          * resetCurl
          * ---------
-         * Sets _animAborted = true first so any running rAF loop exits
-         * immediately and cannot call #swap-button.click() erroneously.
-         * Restores folio opacity via direct Three.js — A-Frame's material
-         * component and its src property are completely untouched.
+         * Clears the watchdog timer first, then sets _animAborted so any
+         * running rAF loop exits without firing the page swap.
+         * Restores folio opacity via Three.js only — src unaffected.
          */
 
         resetCurl: function () {
 
-          this._animAborted = true;   // abort any running animation loop
+          clearTimeout(this._watchdog);   // clear Layer 2 watchdog
+          this._watchdog    = null;
+          this._animAborted = true;       // abort any running rAF loop
 
           const folio     = this.el;
           const folioMesh = folio.getObject3D('mesh');
@@ -662,14 +650,51 @@
         /**
          * tick
          * ----
-         * Maps controller world-X displacement from startX to peelProgress.
-         * sensitivity = 2.0: 50 cm hand travel = full page turn.
-         * Stops when activeController is nulled by completeCurl or snapBack.
+         * LAYER 1 — Gamepad polling.
+         *
+         * When activeController is set (drag phase), every frame reads the
+         * physical button state from the gamepad directly:
+         *   button index 4 = A (right Touch) and X (left Touch) on Quest 2.
+         *
+         * If the button is no longer pressed, completeCurl or snapBack is
+         * triggered immediately — without waiting for abuttonup/xbuttonup.
+         * This means a dropped input event is recovered within ~16 ms.
+         *
+         * activeController is nulled by _completeCurl/_snapBack before their
+         * rAF loops begin, so polling stops once the animation is running.
          */
 
         tick: function () {
 
           if (!this.isCurling || !this.isVR || !this.activeController) return;
+
+          // ── Layer 1: poll physical button state ───────────────────────────
+          // If the button is no longer held, resolve the curl right now
+          // regardless of whether abuttonup/xbuttonup was delivered.
+
+          const tc = this.activeController.components &&
+                     this.activeController.components['tracked-controls'];
+
+          if (tc && tc.controller && tc.controller.gamepad) {
+
+            const gp  = tc.controller.gamepad;
+            const btn = gp.buttons[4];   // A (right) and X (left) = index 4
+
+            if (btn && !btn.pressed) {
+              // Button released — null activeController first so this branch
+              // cannot fire twice on consecutive ticks.
+              this.activeController = null;
+              if (this.peelProgress >= 0.5) {
+                this._completeCurl();
+              } else {
+                this._snapBack();
+              }
+              return;
+            }
+
+          }
+
+          // ── Update peel position from hand movement ───────────────────────
 
           this.activeController.object3D.getWorldPosition(this._ctrlPos);
 
@@ -1252,15 +1277,15 @@
 
           // Page 1 Full Data: Hartmann Schedel's Nuremberg Chronicle (1493)
 
-          const lat1 = "De Scocia\n\nScocia est insule in quo est anglia suprema portio et in aquilone versa. Flumibus haud magnis et monte quodam ab anglia discreta. Hic nos brunali tempore fuimus cum sol paulo amplius quam tris horis terram illusiaret. Jacobus eo tempore regnabat quadratus et multo abdomine grauis. qui cum olim in anglia captus . xi . annis in custodia fuisset. ac dimissus tandem suscepta ex anglica coniuge domum reuersus plures regulos gladio percussisset. et ipse tandem a suis domesticis interfectus est. Inter quos vltione pacata filius eius regnum suscepit. Audiueramus nos olim arborem esse in scocia quae supra ripas fluminis enata fructus produceret anetarum formam habentes et eos cum quidem maturitati proximi essent sponte sua decider. alios in terram. alios in aquam. et in terra deiectos putrescere. in aquam vero dimersos mox aviatos enatare sub aquis et in aera plumis plenisque euestigio euolare. De quare cum aidius inuestigaremus didicimus miracula spe remotius fugere famosamque arborem non in scocia sed apud olchades insulas inueniri. Illud tamen nobis in scocia miraculum praesentatum est. nam pauperes pene nudos ad ecclesias mendicantes acceptis lapidibus elemosine gratia datis letos abiisse conspeximus. Id genus lapidis siue sulphurea siue alia pingues materia praeditum pro ligno quo regio nuda est comburitur.";
+          const lat1 = "De Scocia\n\nScocia est insule in quo est anglia suprema portio et in aquilone versa. Flumibus haud magnis et monte quodam ab anglia discreta. Hic nos brunali tempore fuimus cum sol paulo amplius quam tris horis terram illusiaret. Jacobus eo tempore regnabat quadratus et multo abdomine grauis. qui cum olim in anglia captus undecim annis in custodia fuisset. ac dimissus tandem suscepta ex anglica coniuge domum reuersus plures regulos gladio percussisset. et ipse tandem a suis domesticis interfectus est. Inter quos vltione pacata filius eius regnum suscepit. Audiueramus nos olim arborem esse in scocia quae supra ripas fluminis enata fructus produceret anetarum formam habentes. qui cum maturitati proximi essent aut in terram aut in aquam deciderent. et hi qui in terram caderent putrescerent. qui uero in aquam mergerentur mox uiuere inciperent et sub aquis natarent. et in aera pennis et alis euolarent. Id genus lapidis siue sulphurea siue alia pingues materia praeditum pro ligno quo regio nuda est comburitur.";
 
-          const eng1 = "Concerning Scotland\n\nScotland is of the island in which England is the upper part, and it lies toward the north. It is separated from England by rivers not large and by a certain mountain. We were here in the winter season, when the sun shone upon the earth for a little more than three hours. [King] James [IV] reigned at that time, square-built and burdened with a very large belly. He, having once been captured in England and kept in custody for eleven years, and at last released, after taking an English wife, returned home and struck down several petty rulers with the sword. And he himself was at last killed by his own household, among whom, vengeance having been settled, his son took up the kingdom. We had once heard that there was in Scotland a tree which, growing above the banks of a river, produced fruits having the form of ducks, and these indeed, when they were near maturity, fell of their own accord, some onto the land, others into the water. And those cast onto the land rot; but those plunged into the water, however, soon become birds, swim beneath the waters, and fly into the air with feathers and full plumage. About the matter, therefore, when we investigated more eagerly, we learned that marvels flee closer scrutiny, and that the famous tree is found not in Scotland but among the Orkney Islands. Yet this marvel was shown to us in Scotland: for we saw poor people, almost naked, begging at the churches, who went away rejoicing after receiving stones given as alms. This kind of stone, endowed with a sulphurous or other rich material, is burned in place of wood, of which the region is bare..";
+          const eng1 = "Concerning Scotland\n\nScotland is of the island in which England is the upper part, and it lies toward the north. It is separated from England by rivers not large and by a certain mountain. We were here in the winter season, when the sun shone upon the earth for a little more than three hours. King James IV reigned at that time, square-built and burdened with a very large belly. He, having once been captured in England and kept in custody for eleven years, and at last released, after taking an English wife, returned home and struck down several petty rulers with the sword. And he himself was at last killed by his own household. Among whom, when vengeance was pacified, his son took up the kingdom. We had heard that there was once a tree in Scotland which, growing above the banks of a river, produced fruit having the shape of ducks. When these were near to maturity, they fell either into the earth or into the water; those which fell upon the earth would rot, but those truly which were submerged in the water would soon begin to live, swim under the water, and fly into the air with feathers and wings. This kind of stone, endowed with a sulphurous or other rich material, is burned in place of wood, of which the region is bare.";
 
           // Page 2 Full Data: Liber Pluscardensis (c. 1500)
 
-          const lat2 = "Quorum cateruis sic gloriose circumuallatus et in gloria humane potencie sic confisus usque ad locum qui bannokburn dicitur perueniens tentoria sua fixit Cui rex robertus cum paucis respectu multitudinis eius in domino confidens et in deum virtutem faciens ac beatum andream apostolum et sanctum iohannem baptistam in eius auxilium ad miserabilem populum scocie de seruitute indebita liberandum postulans cum dicto rege anglie mortale commisit bellum ac ipsum cum omni pompa sua et innumerabili potencia auxiliante altissimo cuius est victoriam dare, et in cuius manu sunt omnes fines terre in fugam conuertit ubi comes glouernie et multi nobiles anglie ceciderunt interfecti... alii fugati . alii capti . alii occisi... . per captiuos enim non solum regina scocie cum suis liberati sunt dimissa est ymmo eciam omnes alii scoti in carceribus deputati sine redempcione liberati sunt . Ac eciam omnes alii in dicto bello existentes inestimabiliter sunt ditati Inter quos captus est ille ditissimus iohannes de britania per quem liberata fuit regina scocie captiua quod absurdum esset audire reginam captiuam esse Item pro ipso liberatus est episcopus de glasguw vir venerabilis et magne senectutis in carceribus similiter per tirannum detentus londoniis [.]";
+          const lat2 = "Quorum cateruis sic gloriose circumuallatus venit usque ad locum qui ditur Bannokburne et ibi fixit tentoria sua. Cui rex robertus cum paucis respectu multitudinis eius in domino confidens et in deo virtutem capiens cum dicto rege anglie mortale commisit bellum ac ipsum cum omni pompa sua et innumerabili potencia auxiliante altissimo cuius est victoriam dare in fugam conuertit. ubi comes glouernie et multi nobiles anglie ceciderunt interfecti. alii fugati, alii capti, alii occisi in foveis et in aqua de Bannokburne submersi. per captiuos enim non solum regina scocie cum suis liberati sunt de carcere anglorum per commutacionem nobilium anglie captorum. Ac eciam omnes alii in dicto bello existentes inestimabiliter sunt ditati.";
 
-          const eng2 = "Surrounded so gloriously by his companies, and trusting so confidently in the glory of human power, he [King Edward II of England] came as far as the place called Bannockburn and pitched his tents there. Against him King Robert, with only a few men, compared with his multitude, trusting in the Lord and taking strength in God, and calling upon Blessed Andrew the Apostle and Saint John the Baptist for aid in freeing the wretched people of Scotland from unjust servitude, joined mortal battle with the said king of England. And him, with all his pomp and his innumerable power, the Most High assisting – whose prerogative it is to grant victory, and in whose hand are all the ends of the earth – he turned to flight. There the Earl of Gloucester and many nobles of England fell slain…. Others were put to flight; others were captured; others were killed… For by means of the captives not only was the queen of Scotland, with her people, set free; indeed (what is more), all the other Scots who had been assigned to prisons were freed without ransom. And also all the others who were present in the said battle were enriched beyond measure. Among these was captured that very rich man, John of Brittany, through whom the queen of Scotland was freed from captivity, something which it would be absurd even to hear, namely that a queen should be held captive. Likewise, in exchange for him, the bishop of Glasgow, a venerable man of great age, who had similarly been held in prison by the tyrant, was freed at London [.]";
+          const eng2 = "Surrounded so gloriously by his companies, he came as far as the place called Bannockburn and pitched his tents there. Against him King Robert, with only a few men in respect to his multitude, trusting in the Lord and taking strength in God, joined mortal battle with the said king of England. And him, with all his pomp and his innumerable power, the Most High assisting, whose it is to give victory, he turned to flight. There the Earl of Gloucester and many nobles of England fell slain. Others were put to flight; others were captured; others were killed in the pits and submerged in the water of Bannockburn. For through the captives, not only was the Queen of Scotland with her people liberated from the prison of the English through the exchange of the captured English nobles, but also all others present in the said war were enriched beyond measure.";
 
 
           transcrText.setAttribute('value', lat1);
@@ -1552,5 +1577,3 @@
   </body>
 
 </html>
-
-On Tue, 31 Mar 2026, 08:26 James Gallacher, <james.gallacher94@gmail.com> wrote:
