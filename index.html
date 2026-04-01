@@ -385,7 +385,7 @@
                 setTimeout(() => {
                   if (this._animAborted) return;
                   this.resetCurl();
-                  document.querySelector('#swap-button').click();
+                  document.querySelector('#swap-button').emit('click') //;
                 }, 50);
               }
             };
@@ -490,7 +490,7 @@
             evt.stopPropagation();
             if (!this.isVR) {
               playPageTurn();
-              document.querySelector('#swap-button').click();
+              document.querySelector('#swap-button').emit('click');  
             }
           });
 
@@ -498,7 +498,7 @@
             evt.stopPropagation();
             if (!this.isVR) {
               playPageTurn();
-              document.querySelector('#swap-button').click();
+              document.querySelector('#swap-button').emit('click');
             }
           });
 
