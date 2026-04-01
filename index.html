@@ -441,8 +441,11 @@
             const folioMesh = folio.getObject3D('mesh');
             if (folioMesh && folioMesh.material) {
               if (folioMesh.material.map) {
-                this.curlMat.map         = folioMesh.material.map;
-                this.curlMat.needsUpdate = true;
+                this.curlMat.map         = folioMesh.material.map; 
+                 this.curlMat.map.minFilter = THREE.LinearFilter;
+                this.curlMat.map.anisotropy = 16;
+                this.curlMat.map.needsUpdate = true;
+                this.curlMat.needsUpdate = true
               }
               this.curlMat.metalness = folioMesh.material.metalness;
               this.curlMat.roughness = folioMesh.material.roughness;
