@@ -197,20 +197,23 @@
       /**
        * COMPONENT: PAGE CURL
        * --------------------
-       * Rolling-cylinder vertex deformation page curl. Replaces page-corners.
+       * Rolling-cylinder vertex deformation page curl.
        *
        * ── VR input ─────────────────────────────────────────────────────────
-       * A button (right controller) → right-side curl.
-       * X button (left  controller) → left-side  curl.
+       * A button (right controller) → right-side curl → advances forward
+       *   through the pages array (+1).
+       * X button (left  controller) → left-side  curl → goes backward (-1).
        * Hold A/X and move controller left/right to peel.
-       * Release at ≥ 50 % progress → completeCurl → swap + sound.
+       * Release at ≥ 50 % progress → completeCurl → doSwap + sound.
        * Release at  < 50 % progress → snapBack → no swap.
        *
-       * ── Freeze prevention (two-layer defence) ────────────────────────────
-       * The original freeze was caused by abuttonup/xbuttonup being silently
-       * dropped on Quest 2 under load. If these events are never delivered,
-       * isCurling stays true forever and the scene locks.
+       * ── Multi-folio support ───────────────────────────────────────────────
+       * The curl reads scene.pages (set by scriptorium-logic) to determine
+       * the destination texture for the back page. It calls scene.doSwap(dir)
+       * to update the folio, which cycles through the pages array correctly
+       * regardless of how many pages exist.
        *
+       * ── Freeze prevention (two-layer defence) ────────────────────────────
        * LAYER 1 — Gamepad polling in tick():
        *   Every frame, tick() reads the physical button state directly from
        *   the gamepad API (button index 4 = A on right, X on left for Quest 2
@@ -226,12 +229,8 @@
        *   resetCurl() always clears the watchdog, so it never fires during a
        *   normal turn.
        *
-       * abuttonup/xbuttonup events are kept as a fast path. If they fire
-       * correctly they resolve the curl immediately; polling and watchdog
-       * are fallbacks only.
-       *
        * ── Desktop ──────────────────────────────────────────────────────────
-       * Click either bottom corner zone → instant swap + sound.
+       * Click either bottom corner zone → instant forward swap + sound.
        *
        * ── Isolation guarantees ─────────────────────────────────────────────
        * Trigger: 100 % dedicated to vr-grab-rotate. Curl uses A/X only.
@@ -240,14 +239,14 @@
        * Opacity: folio transparency set via direct Three.js only — A-Frame's
        *   material component src state is never touched, so SWAP PAGE works.
        * Animation abort: _animAborted flag + captured curlSide prevent rAF
-       *   loops from calling #swap-button after a resetCurl.
+       *   loops from calling doSwap after a resetCurl.
        *
        * ── Rolling-cylinder formula ──────────────────────────────────────────
        * R = 0.04 m.  Arc width = π × R ≈ 12.6 cm.
        * Right peel: peelX = 0.55 − peelProgress × 1.1
-       *   d ≤ 0      → x = x0,                z = 0
-       *   0 < d ≤ πR → x = peelX + R·sin(d/R), z = R·(1−cos(d/R))
-       *   d > πR     → x = x0,                z = −0.002
+       *   d ≤ 0      → x = x0,                  z = 0
+       *   0 < d ≤ πR → x = peelX + R·sin(d/R),  z = R·(1−cos(d/R))
+       *   d > πR     → x = x0,                  z = −0.002
        * Mirror for left peel.
        */
 
@@ -269,7 +268,7 @@
           this._ctrlPos         = new THREE.Vector3();
           this.R                = 0.04;
           this._animAborted     = false;
-          this._watchdog        = null;   // watchdog timer handle
+          this._watchdog        = null;
 
 
           scene.addEventListener('enter-vr', () => {
@@ -356,8 +355,10 @@
 
           // ── completeCurl ──────────────────────────────────────────────────
           // Stored as this._completeCurl so tick() can call it directly.
-          // curlSide captured locally so resetCurl() nulling it mid-flight
+          // curlSide captured locally — resetCurl() nulling it mid-flight
           // does not corrupt the animation. _animAborted checked every frame.
+          // Calls scene.doSwap(dir, silent=true) — the page-turn sound has
+          // already fired so the UI click sound is suppressed.
 
           this._completeCurl = () => {
 
@@ -384,8 +385,9 @@
               } else {
                 setTimeout(() => {
                   if (this._animAborted) return;
+                  const dir = capturedSide === 'right' ? 1 : -1;
                   this.resetCurl();
-                  document.querySelector('#swap-button').emit('click') //;
+                  if (scene.doSwap) scene.doSwap(dir, true); // true = silent
                 }, 50);
               }
             };
@@ -395,7 +397,6 @@
 
 
           // ── snapBack ──────────────────────────────────────────────────────
-          // Stored as this._snapBack so tick() can call it directly.
 
           this._snapBack = () => {
 
@@ -430,32 +431,48 @@
 
 
           // ── startCurl ─────────────────────────────────────────────────────
+          // Reads scene.pages to find the destination texture for backPage.
+          // Right curl = advance forward (+1), left curl = go backward (-1).
+          // scene.pages is set by scriptorium-logic during its init(), which
+          // completes before any user interaction can trigger a curl.
 
           const startCurl = (side, controllerEl) => {
 
             if (this.isCurling) return;
 
-            const currentPage = scene.currentAudioPage || 1;
-            const nextPage    = currentPage === 1 ? 2 : 1;
+            const pages      = scene.pages;
+            const currentIdx = (scene.currentAudioPage || 1) - 1;
+            const dir        = side === 'right' ? 1 : -1;
+            const nextIdx    = (currentIdx + dir + pages.length) % pages.length;
 
             const folioMesh = folio.getObject3D('mesh');
             if (folioMesh && folioMesh.material) {
               if (folioMesh.material.map) {
-                this.curlMat.map         = folioMesh.material.map; 
-                 this.curlMat.map.minFilter = THREE.LinearFilter;
-                this.curlMat.map.anisotropy = 16;
+                this.curlMat.map            = folioMesh.material.map;
+                // Improve texture quality on the curl surface.
+                // minFilter = LinearFilter prevents mipmap blurring on the arc.
+                // anisotropy = 16 sharpens at oblique angles during the peel.
+                // Note: this modifies the shared texture object — this is fine
+                // since both settings are quality improvements for the folio too.
+                this.curlMat.map.minFilter  = THREE.LinearFilter;
+                this.curlMat.map.anisotropy = Math.min(16,
+                  folio.sceneEl.renderer
+                    ? folio.sceneEl.renderer.capabilities.getMaxAnisotropy()
+                    : 16
+                );
                 this.curlMat.map.needsUpdate = true;
-                this.curlMat.needsUpdate = true
+                this.curlMat.needsUpdate     = true;
               }
               this.curlMat.metalness = folioMesh.material.metalness;
               this.curlMat.roughness = folioMesh.material.roughness;
             }
 
-            this.backPage.setAttribute('src',
-              nextPage === 1 ? '#manuscript1' : '#manuscript2');
+            // Show the destination texture behind the peeling page.
+            this.backPage.setAttribute('src', pages[nextIdx].src);
             this.backPage.setAttribute('visible', 'true');
 
-            // Folio opacity via Three.js — never touches A-Frame src state.
+            // Hide folio via Three.js directly — never touches A-Frame's
+            // material component, so src is completely unaffected.
             if (folioMesh && folioMesh.material) {
               folioMesh.material.transparent = true;
               folioMesh.material.opacity     = 0;
@@ -477,23 +494,22 @@
 
             this.updateCurl(0, side);
 
-            // LAYER 2 — Watchdog: if curl is still live after 3500 ms for
-            // any reason, snap back automatically. Cleared in resetCurl().
+            // LAYER 2 — Watchdog: auto-reset if still curling after 3500 ms.
             this._watchdog = setTimeout(() => {
-              if (this.isCurling) {
-                this.resetCurl();
-              }
+              if (this.isCurling) { this.resetCurl(); }
             }, 3500);
           };
 
 
           // ── Desktop corner handlers ───────────────────────────────────────
+          // In VR the corners have no 'clickable' class so these never fire.
+          // Desktop always advances forward (+1 direction).
 
           this.rightCorner.addEventListener('mousedown', (evt) => {
             evt.stopPropagation();
             if (!this.isVR) {
               playPageTurn();
-              document.querySelector('#swap-button').emit('click');  
+              if (scene.doSwap) scene.doSwap(1, true);
             }
           });
 
@@ -501,15 +517,13 @@
             evt.stopPropagation();
             if (!this.isVR) {
               playPageTurn();
-              document.querySelector('#swap-button').emit('click');
+              if (scene.doSwap) scene.doSwap(-1, true);
             }
           });
 
 
           // ── VR A/X button event handlers ──────────────────────────────────
-          // These are the fast path. If abuttonup/xbuttonup are delivered
-          // promptly they resolve the curl immediately. If they are dropped,
-          // tick() polling (Layer 1) catches the release within one frame.
+          // These are the fast path. tick() polling (Layer 1) is the fallback.
 
           scene.addEventListener('loaded', () => {
 
@@ -590,14 +604,14 @@
 
             if (side === 'right') {
               const d = x0 - peelX;
-              if      (d <= 0)    { x = x0;  z = 0; }
-              else if (d <= piR)  { const a = d / R; x = peelX + R * Math.sin(a); z = R * (1 - Math.cos(a)); }
-              else                { x = x0;  z = -0.002; }
+              if      (d <= 0)   { x = x0; z = 0; }
+              else if (d <= piR) { const a = d / R; x = peelX + R * Math.sin(a); z = R * (1 - Math.cos(a)); }
+              else               { x = x0; z = -0.002; }
             } else {
               const d = peelX - x0;
-              if      (d <= 0)    { x = x0;  z = 0; }
-              else if (d <= piR)  { const a = d / R; x = peelX - R * Math.sin(a); z = R * (1 - Math.cos(a)); }
-              else                { x = x0;  z = -0.002; }
+              if      (d <= 0)   { x = x0; z = 0; }
+              else if (d <= piR) { const a = d / R; x = peelX - R * Math.sin(a); z = R * (1 - Math.cos(a)); }
+              else               { x = x0; z = -0.002; }
             }
 
             posAttr.setXYZ(i, x, y0, z);
@@ -614,15 +628,15 @@
          * resetCurl
          * ---------
          * Clears the watchdog timer first, then sets _animAborted so any
-         * running rAF loop exits without firing the page swap.
+         * running rAF loop exits without calling doSwap.
          * Restores folio opacity via Three.js only — src unaffected.
          */
 
         resetCurl: function () {
 
-          clearTimeout(this._watchdog);   // clear Layer 2 watchdog
+          clearTimeout(this._watchdog);
           this._watchdog    = null;
-          this._animAborted = true;       // abort any running rAF loop
+          this._animAborted = true;
 
           const folio     = this.el;
           const folioMesh = folio.getObject3D('mesh');
@@ -654,26 +668,14 @@
          * tick
          * ----
          * LAYER 1 — Gamepad polling.
-         *
-         * When activeController is set (drag phase), every frame reads the
-         * physical button state from the gamepad directly:
-         *   button index 4 = A (right Touch) and X (left Touch) on Quest 2.
-         *
-         * If the button is no longer pressed, completeCurl or snapBack is
-         * triggered immediately — without waiting for abuttonup/xbuttonup.
-         * This means a dropped input event is recovered within ~16 ms.
-         *
-         * activeController is nulled by _completeCurl/_snapBack before their
-         * rAF loops begin, so polling stops once the animation is running.
+         * Button index 4 = A (right Touch) and X (left Touch) on Quest 2.
+         * If the button is no longer held, resolve the curl immediately
+         * regardless of whether abuttonup/xbuttonup was delivered.
          */
 
         tick: function () {
 
           if (!this.isCurling || !this.isVR || !this.activeController) return;
-
-          // ── Layer 1: poll physical button state ───────────────────────────
-          // If the button is no longer held, resolve the curl right now
-          // regardless of whether abuttonup/xbuttonup was delivered.
 
           const tc = this.activeController.components &&
                      this.activeController.components['tracked-controls'];
@@ -681,12 +683,10 @@
           if (tc && tc.controller && tc.controller.gamepad) {
 
             const gp  = tc.controller.gamepad;
-            const btn = gp.buttons[4];   // A (right) and X (left) = index 4
+            const btn = gp.buttons[4]; // A (right) and X (left) = index 4
 
             if (btn && !btn.pressed) {
-              // Button released — null activeController first so this branch
-              // cannot fire twice on consecutive ticks.
-              this.activeController = null;
+              this.activeController = null; // prevent double-fire on next tick
               if (this.peelProgress >= 0.5) {
                 this._completeCurl();
               } else {
@@ -696,8 +696,6 @@
             }
 
           }
-
-          // ── Update peel position from hand movement ───────────────────────
 
           this.activeController.object3D.getWorldPosition(this._ctrlPos);
 
@@ -1074,17 +1072,17 @@
        * A/X buttons toggle audio playback for the current folio page.
        *
        * Schema:
-       *   src1 — selector for the page-1 audio element (e.g. #latin1-track)
-       *   src2 — selector for the page-2 audio element (e.g. #latin2-track)
+       *   type — 'latin' or 'english'. Reads the matching audio src from
+       *          scene.pages[currentPage].latinSrc / .englishSrc.
+       *          Adding a new page only requires updating the pages array;
+       *          this component needs no changes.
        */
 
       AFRAME.registerComponent('panel-audio', {
 
         schema: {
 
-          src1: { type: 'string', default: '' },
-
-          src2: { type: 'string', default: '' }
+          type: { type: 'string', default: 'latin' }
 
         },
 
@@ -1149,11 +1147,22 @@
           });
 
 
+          // Reads from scene.pages — works for any number of pages.
+          // scene.pages is set by scriptorium-logic before any interaction.
+
           const getAudio = () => {
 
-            const page  = scene.currentAudioPage || 1;
+            const pages = scene.pages;
 
-            const srcId = (page === 1) ? this.data.src1 : this.data.src2;
+            if (!pages) return null;
+
+            const idx  = (scene.currentAudioPage || 1) - 1;
+
+            const page = pages[idx];
+
+            if (!page) return null;
+
+            const srcId = this.data.type === 'latin' ? page.latinSrc : page.englishSrc;
 
             return srcId ? document.querySelector(srcId) : null;
 
@@ -1219,46 +1228,61 @@
       /**
        * COMPONENT: SCRIPTORIUM LOGIC
        * ----------------------------
-       * The central controller for the experience. Manages text data,
-       * page swaps, materiality settings, and audio playback.
+       * Central controller. Manages the pages array, page swaps,
+       * materiality settings, zoom, scale, and audio playback.
+       *
+       * ── Adding a new folio ────────────────────────────────────────────────
+       * 1. Add <img> and <audio> elements to <a-assets> in the HTML.
+       * 2. Add a new entry to the pages[] array below.
+       *    Match the property names exactly as shown.
+       * No other code changes are needed anywhere.
+       *
+       * ── pages[] array structure ───────────────────────────────────────────
+       *   src        — asset selector for the folio image, e.g. '#manuscript3'
+       *   lat        — full Latin transcription text
+       *   eng        — full English translation text
+       *   title      — text shown in the info panel (left of folio)
+       *   hover      — text shown in the hover tooltip above the folio
+       *   latinSrc   — asset selector for the Latin audio, e.g. '#latin3-track'
+       *   englishSrc — asset selector for the English audio, e.g. '#english3-track'
        */
 
       AFRAME.registerComponent('scriptorium-logic', {
 
         init: function () {
 
-          const folio = document.querySelector('#folio-object');
+          const folio        = document.querySelector('#folio-object');
 
-          const zoomAnchor = document.querySelector('#zoom-anchor');
+          const zoomAnchor   = document.querySelector('#zoom-anchor');
 
-          const infoPanel = document.querySelector('#info-panel');
+          const infoPanel    = document.querySelector('#info-panel');
 
-          const soundEl = document.querySelector('#ambient-sound');
+          const soundEl      = document.querySelector('#ambient-sound');
 
           const clickSoundEl = document.querySelector('#click-sound');
 
-          const transcrText = document.querySelector('#transcr-text');
+          const transcrText  = document.querySelector('#transcr-text');
 
-          const translText = document.querySelector('#transl-text');
+          const translText   = document.querySelector('#transl-text');
 
-          const muteBtn = document.querySelector('#mute-button');
+          const muteBtn      = document.querySelector('#mute-button');
 
-          const muteLabel = document.querySelector('#mute-label');
+          const muteLabel    = document.querySelector('#mute-label');
 
           const hoverTooltip = document.querySelector('#hover-tooltip');
 
-          const cursor = document.querySelector('#cursor');
+          const cursor       = document.querySelector('#cursor');
 
           this.el.addEventListener('enter-vr', () => cursor.setAttribute('visible', false));
 
           this.el.addEventListener('exit-vr',  () => cursor.setAttribute('visible', true));
 
 
-          let zoomed = false;
+          let zoomed          = false;
 
           let materialityMode = false;
 
-          let currentPage = 1;
+          let currentPage     = 1;         // 1-based index into pages[]
 
           this.el.currentAudioPage = 1;
 
@@ -1278,22 +1302,54 @@
           };
 
 
-          // Page 1 Full Data: Hartmann Schedel's Nuremberg Chronicle (1493)
+          // ── Page data ─────────────────────────────────────────────────────
+          // To add a folio: add an entry here AND add its assets to <a-assets>.
+          // All other code adapts automatically.
 
           const lat1 = "De Scocia\n\nScocia est insule in quo est anglia suprema portio et in aquilone versa. Flumibus haud magnis et monte quodam ab anglia discreta. Hic nos brunali tempore fuimus cum sol paulo amplius quam tris horis terram illusiaret. Jacobus eo tempore regnabat quadratus et multo abdomine grauis. qui cum olim in anglia captus undecim annis in custodia fuisset. ac dimissus tandem suscepta ex anglica coniuge domum reuersus plures regulos gladio percussisset. et ipse tandem a suis domesticis interfectus est. Inter quos vltione pacata filius eius regnum suscepit. Audiueramus nos olim arborem esse in scocia quae supra ripas fluminis enata fructus produceret anetarum formam habentes. qui cum maturitati proximi essent aut in terram aut in aquam deciderent. et hi qui in terram caderent putrescerent. qui uero in aquam mergerentur mox uiuere inciperent et sub aquis natarent. et in aera pennis et alis euolarent. Id genus lapidis siue sulphurea siue alia pingues materia praeditum pro ligno quo regio nuda est comburitur.";
 
           const eng1 = "Concerning Scotland\n\nScotland is of the island in which England is the upper part, and it lies toward the north. It is separated from England by rivers not large and by a certain mountain. We were here in the winter season, when the sun shone upon the earth for a little more than three hours. King James IV reigned at that time, square-built and burdened with a very large belly. He, having once been captured in England and kept in custody for eleven years, and at last released, after taking an English wife, returned home and struck down several petty rulers with the sword. And he himself was at last killed by his own household. Among whom, when vengeance was pacified, his son took up the kingdom. We had heard that there was once a tree in Scotland which, growing above the banks of a river, produced fruit having the shape of ducks. When these were near to maturity, they fell either into the earth or into the water; those which fell upon the earth would rot, but those truly which were submerged in the water would soon begin to live, swim under the water, and fly into the air with feathers and wings. This kind of stone, endowed with a sulphurous or other rich material, is burned in place of wood, of which the region is bare.";
-
-          // Page 2 Full Data: Liber Pluscardensis (c. 1500)
 
           const lat2 = "Quorum cateruis sic gloriose circumuallatus venit usque ad locum qui ditur Bannokburne et ibi fixit tentoria sua. Cui rex robertus cum paucis respectu multitudinis eius in domino confidens et in deo virtutem capiens cum dicto rege anglie mortale commisit bellum ac ipsum cum omni pompa sua et innumerabili potencia auxiliante altissimo cuius est victoriam dare in fugam conuertit. ubi comes glouernie et multi nobiles anglie ceciderunt interfecti. alii fugati, alii capti, alii occisi in foveis et in aqua de Bannokburne submersi. per captiuos enim non solum regina scocie cum suis liberati sunt de carcere anglorum per commutacionem nobilium anglie captorum. Ac eciam omnes alii in dicto bello existentes inestimabiliter sunt ditati.";
 
           const eng2 = "Surrounded so gloriously by his companies, he came as far as the place called Bannockburn and pitched his tents there. Against him King Robert, with only a few men in respect to his multitude, trusting in the Lord and taking strength in God, joined mortal battle with the said king of England. And him, with all his pomp and his innumerable power, the Most High assisting, whose it is to give victory, he turned to flight. There the Earl of Gloucester and many nobles of England fell slain. Others were put to flight; others were captured; others were killed in the pits and submerged in the water of Bannockburn. For through the captives, not only was the Queen of Scotland with her people liberated from the prison of the English through the exchange of the captured English nobles, but also all others present in the said war were enriched beyond measure.";
 
 
-          transcrText.setAttribute('value', lat1);
+          // ── Pages array ───────────────────────────────────────────────────
+          // Add new folios here. Everything else updates automatically.
 
-          translText.setAttribute('value', eng1);
+          const pages = [
+            {
+              src:        '#manuscript1',
+              lat:        lat1,
+              eng:        eng1,
+              title:      'Liber Chronicarum, 1493,\nHartmann Schedel',
+              hover:      'Liber Chronicarum',
+              latinSrc:   '#latin1-track',
+              englishSrc: '#english1-track'
+            },
+            {
+              src:        '#manuscript2',
+              lat:        lat2,
+              eng:        eng2,
+              title:      'Liber Pluscardensis,\nbefore 1500',
+              hover:      'Liber Pluscardensis',
+              latinSrc:   '#latin2-track',
+              englishSrc: '#english2-track'
+            }
+            // Add more pages here — no other code changes needed.
+          ];
+
+          // Expose pages on the scene element so page-curl and panel-audio
+          // can access them without being coupled to scriptorium-logic.
+          this.el.pages = pages;
+
+
+          // ── Populate initial page ─────────────────────────────────────────
+
+          transcrText.setAttribute('value', pages[0].lat);
+
+          translText.setAttribute('value',  pages[0].eng);
 
 
           folio.addEventListener('mouseenter', () => hoverTooltip.setAttribute('visible', 'true'));
@@ -1301,7 +1357,54 @@
           folio.addEventListener('mouseleave', () => hoverTooltip.setAttribute('visible', 'false'));
 
 
-          // Zoom Action
+          // ── doSwap ────────────────────────────────────────────────────────
+          // Central page-switching function used by:
+          //   — the SWAP PAGE UI button (dir = +1, silent = false)
+          //   — the page-curl component (dir = ±1, silent = true)
+          //   — the desktop corner zones (dir = ±1, silent = true)
+          //
+          // dir:    +1 = forward, -1 = backward. Wraps with modular arithmetic
+          //         so any number of pages works correctly.
+          // silent: if true, suppresses the UI click sound (the curl already
+          //         played the page-turn sound).
+
+          const doSwap = (dir, silent) => {
+
+            if (!silent) playClick();
+
+            currentPage = ((currentPage - 1 + dir + pages.length) % pages.length) + 1;
+
+            this.el.currentAudioPage = currentPage;
+
+            if (this.el.currentPanelAudio) {
+
+              this.el.currentPanelAudio.pause();
+
+              this.el.currentPanelAudio.currentTime = 0;
+
+              this.el.currentPanelAudio = null;
+
+            }
+
+            const page = pages[currentPage - 1];
+
+            folio.setAttribute('src', page.src);
+
+            document.querySelector('#hover-text').setAttribute('value', page.hover);
+
+            transcrText.setAttribute('value', page.lat);
+
+            translText.setAttribute('value',  page.eng);
+
+            document.querySelector('#info-text').setAttribute('value', page.title);
+
+          };
+
+          // Expose on scene element so page-curl can call it directly.
+          this.el.doSwap = doSwap;
+
+
+          // ── Zoom Action ───────────────────────────────────────────────────
 
           document.querySelector('#zoom-button').addEventListener('click', () => {
 
@@ -1315,18 +1418,18 @@
 
               property: 'position',
 
-              to: zoomed ? '0 1.5 -0.6' : '0 1.1 -1.4',
+              to:       zoomed ? '0 1.5 -0.6' : '0 1.1 -1.4',
 
-              dur: 800,
+              dur:      800,
 
-              easing: 'easeInOutQuad'
+              easing:   'easeInOutQuad'
 
             });
 
           });
 
 
-          // Materiality Toggle Action
+          // ── Materiality Toggle ────────────────────────────────────────────
 
           document.querySelector('#mat-button').addEventListener('click', () => {
 
@@ -1345,56 +1448,22 @@
           });
 
 
-          // Swap Page Action
+          // ── Swap Page (UI button — always goes forward) ───────────────────
 
           document.querySelector('#swap-button').addEventListener('click', () => {
 
-            playClick();
-
-            currentPage = (currentPage === 1) ? 2 : 1;
-
-            this.el.currentAudioPage = currentPage;
-
-            if (this.el.currentPanelAudio) {
-
-              this.el.currentPanelAudio.pause();
-
-              this.el.currentPanelAudio.currentTime = 0;
-
-              this.el.currentPanelAudio = null;
-
-            }
-
-            folio.setAttribute('src', currentPage === 1 ? '#manuscript1' : '#manuscript2');
-
-            document.querySelector('#hover-text').setAttribute('value', currentPage === 1 ? 'Liber Chronicarum' : 'Liber Pluscardensis');
-
-            transcrText.setAttribute('value', currentPage === 1 ? lat1 : lat2);
-
-            translText.setAttribute('value', currentPage === 1 ? eng1 : eng2);
-
-            document.querySelector('#info-text').setAttribute(
-
-              'value',
-
-              currentPage === 1
-
-                ? 'Liber Chronicarum, 1493,\nHartmann Schedel'
-
-                : 'Liber Pluscardensis,\nbefore 1500'
-
-            );
+            doSwap(1, false);
 
           });
 
 
-          // Scale Cycling Action
+          // ── Scale Cycling ─────────────────────────────────────────────────
 
           document.querySelector('#scale-button').addEventListener('click', () => {
 
             playClick();
 
-            let s = folio.getAttribute('scale');
+            let s         = folio.getAttribute('scale');
 
             let nextScale = s.x > 1.3 ? "0.7 0.7 0.7" : (s.x < 0.8 ? "1 1 1" : "1.5 1.5 1.5");
 
@@ -1403,7 +1472,7 @@
           });
 
 
-          // Mute Action
+          // ── Mute ──────────────────────────────────────────────────────────
 
           muteBtn.addEventListener('click', () => {
 
@@ -1447,25 +1516,30 @@
 
       <a-assets>
 
+        <!-- ═══════════════════════════════════════════════════════════════
+             ADDING A NEW FOLIO:
+             1. Add an <img> and matching <audio> tracks here.
+             2. Add a new entry to the pages[] array in scriptorium-logic.
+             No other code changes are needed anywhere.
+             ═══════════════════════════════════════════════════════════════ -->
+
         <img id="manuscript1" src="folio.jpg">
 
         <img id="manuscript2" src="folio2.jpg">
 
-        <audio id="music-track" src="chant.mp3" preload="auto"></audio>
+        <audio id="music-track"    src="chant.mp3"     preload="auto"></audio>
 
-        <audio id="click-track" src="click.mp3" preload="auto"></audio>
+        <audio id="click-track"    src="click.mp3"     preload="auto"></audio>
 
         <audio id="pageturn-track" src="pageturn1.mp3" preload="auto"></audio>
 
-        <!-- Panel audio: one file per text panel per folio page.        -->
+        <audio id="latin1-track"   src="latin1.mp3"    preload="auto"></audio>
 
-        <audio id="latin1-track"   src="latin1.mp3"   preload="auto"></audio>
+        <audio id="english1-track" src="english1.mp3"  preload="auto"></audio>
 
-        <audio id="english1-track" src="english1.mp3" preload="auto"></audio>
+        <audio id="latin2-track"   src="latin2.mp3"    preload="auto"></audio>
 
-        <audio id="latin2-track"   src="latin2.mp3"   preload="auto"></audio>
-
-        <audio id="english2-track" src="english2.mp3" preload="auto"></audio>
+        <audio id="english2-track" src="english2.mp3"  preload="auto"></audio>
 
       </a-assets>
 
@@ -1476,7 +1550,7 @@
 
       <a-entity id="ambient-sound" sound="src: #music-track; loop: true; volume: 0.5;"></a-entity>
 
-      <a-entity id="click-sound" sound="src: #click-track; volume: 1.0; poolSize: 5;"></a-entity>
+      <a-entity id="click-sound"   sound="src: #click-track; volume: 1.0; poolSize: 5;"></a-entity>
 
       <a-text id="sound-ui" value="CLICK TO START" position="0 2.2 -2" align="center" color="#FFD700" width="3"></a-text>
 
@@ -1495,7 +1569,7 @@
 
         </a-entity>
 
-        <a-entity laser-controls="hand: left" raycaster="objects: .clickable; far: 10;"></a-entity>
+        <a-entity laser-controls="hand: left"  raycaster="objects: .clickable; far: 10;"></a-entity>
 
         <a-entity laser-controls="hand: right" raycaster="objects: .clickable; far: 10;"></a-entity>
 
@@ -1525,13 +1599,13 @@
 
           <a-entity id="button-group" position="0.9 0 0.1" rotation="0 -25 0">
 
-              <a-sphere id="zoom-button" class="clickable" haptic-button position="0 0.25 0" radius="0.04" color="#FFD700"><a-text value="ZOOM/RESET" position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
+              <a-sphere id="zoom-button"  class="clickable" haptic-button position="0 0.25 0"  radius="0.04" color="#FFD700"><a-text value="ZOOM/RESET" position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
 
-              <a-sphere id="mat-button" class="clickable" haptic-button position="0 0.12 0" radius="0.04" color="#C0C0C0"><a-text value="MATERIAL" position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
+              <a-sphere id="mat-button"   class="clickable" haptic-button position="0 0.12 0"  radius="0.04" color="#C0C0C0"><a-text value="MATERIAL"  position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
 
-              <a-sphere id="swap-button" class="clickable" haptic-button position="0 0 0" radius="0.04" color="#cd7f32"><a-text value="SWAP PAGE" position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
+              <a-sphere id="swap-button"  class="clickable" haptic-button position="0 0 0"     radius="0.04" color="#cd7f32"><a-text value="SWAP PAGE" position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
 
-              <a-sphere id="scale-button" class="clickable" haptic-button position="0 -0.12 0" radius="0.04" color="#4CC3D9"><a-text value="SCALE" position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
+              <a-sphere id="scale-button" class="clickable" haptic-button position="0 -0.12 0" radius="0.04" color="#4CC3D9"><a-text value="SCALE"     position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
 
               <a-box id="mute-button" class="clickable" haptic-button position="0 -0.25 0" width="0.06" height="0.06" depth="0.06" color="#FF4500">
 
@@ -1552,7 +1626,12 @@
       </a-entity>
 
 
-      <a-entity id="translation-panel" position="-2.06 1.5 -0.75" look-at-user panel-audio="src1: #english1-track; src2: #english2-track">
+      <!-- panel-audio now uses type="latin"|"english" instead of src1/src2.
+           Adding a new page requires only updating the pages[] array.     -->
+
+      <a-entity id="translation-panel"
+                position="-2.06 1.5 -0.75" look-at-user
+                panel-audio="type: english">
 
           <a-plane width="1.2" height="1.8" color="#111" opacity="0.9" material="side: double;"></a-plane>
 
@@ -1563,7 +1642,9 @@
       </a-entity>
 
 
-      <a-entity id="transcription-panel" position="-2.06 1.5 0.75" look-at-user panel-audio="src1: #latin1-track; src2: #latin2-track">
+      <a-entity id="transcription-panel"
+                position="-2.06 1.5 0.75" look-at-user
+                panel-audio="type: latin">
 
           <a-plane width="1.2" height="1.8" color="#111" opacity="0.9" material="side: double;"></a-plane>
 
