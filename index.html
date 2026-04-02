@@ -18,10 +18,7 @@
       /**
        * COMPONENT: LOOK AT USER
        * -----------------------
-       * This component ensures that the information panels always rotate
-       * to face the user's camera. This creates an "imaginary line"
-       * connection, ensuring the panels tilt dynamically
-       * as the user moves within the VR space or looks around.
+       * Ensures translation/transcription panels always face the camera.
        */
 
       AFRAME.registerComponent('look-at-user', {
@@ -36,7 +33,7 @@
 
         tick: function () {
 
-          const sceneEl = this.el.sceneEl;
+          const sceneEl  = this.el.sceneEl;
 
           const cameraEl = sceneEl.camera ? sceneEl.camera.el : null;
 
@@ -54,10 +51,147 @@
 
 
       /**
+       * COMPONENT: VR LOCOMOTION
+       * ------------------------
+       * Joystick-based movement for VR. Attached to the #rig entity so that
+       * the camera and both controllers all move together.
+       *
+       * Left  thumbstick (axes[2], axes[3]):
+       *   Push forward/back → walk in the direction the camera faces (yaw only).
+       *   Push left/right   → strafe.
+       *   Speed: 0.004 m/ms (4 m/s). Deadzone: 0.2.
+       *
+       * Right thumbstick (axes[2]):
+       *   Flick left/right → snap-turn the rig by 45°.
+       *   Snap fires once per flick; stick must return to centre before
+       *   the next snap (prevents continuous spinning).
+       *
+       * Gamepad axis mapping for Quest 2 Touch controllers via WebXR:
+       *   axes[2] = thumbstick X,  axes[3] = thumbstick Y.
+       * If your device uses axes[0]/axes[1] instead, change the indices
+       * in the two '_getStick' calls below.
+       *
+       * Only active in VR (isVR flag). Does not interfere with desktop
+       * WASD movement (wasd-controls on the camera entity handles that).
+       */
+
+      AFRAME.registerComponent('vr-locomotion', {
+
+        init: function () {
+
+          this.isVR      = false;
+          this.leftCtrl  = null;
+          this.rightCtrl = null;
+          this._forward  = new THREE.Vector3();
+          this._right    = new THREE.Vector3();
+          this._snapUsed = false;   // prevents continuous snap while stick held
+
+          const scene = this.el.sceneEl;
+
+          scene.addEventListener('enter-vr', () => { this.isVR = true;  });
+          scene.addEventListener('exit-vr',  () => { this.isVR = false; });
+
+          scene.addEventListener('loaded', () => {
+            this.leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
+            this.rightCtrl = document.querySelector('[laser-controls="hand: right"]');
+          });
+
+        },
+
+
+        _getGamepad: function (ctrl) {
+
+          if (!ctrl) return null;
+
+          const tc = ctrl.components && ctrl.components['tracked-controls'];
+
+          return (tc && tc.controller && tc.controller.gamepad) || null;
+
+        },
+
+
+        tick: function (t, dt) {
+
+          if (!this.isVR) return;
+
+          const leftGP  = this._getGamepad(this.leftCtrl);
+          const rightGP = this._getGamepad(this.rightCtrl);
+
+
+          // ── Left stick: walk / strafe ─────────────────────────────────────
+
+          if (leftGP) {
+
+            const stickX  = leftGP.axes[2] || 0;   // thumbstick X (strafe)
+            const stickY  = leftGP.axes[3] || 0;   // thumbstick Y (forward/back)
+            const deadzone = 0.2;
+
+            if (Math.abs(stickX) > deadzone || Math.abs(stickY) > deadzone) {
+
+              // Move relative to the direction the camera is facing (yaw only).
+              const camEl = this.el.sceneEl.camera ? this.el.sceneEl.camera.el : null;
+
+              if (camEl) {
+
+                camEl.object3D.getWorldDirection(this._forward);
+                this._forward.y = 0;
+                this._forward.normalize();
+
+                this._right.crossVectors(
+                  this._forward,
+                  new THREE.Vector3(0, 1, 0)
+                ).normalize();
+
+                const speed = 0.004;                  // metres per millisecond
+                const pos   = this.el.object3D;
+
+                // Negative stickY = push forward = move in _forward direction.
+                pos.position.addScaledVector(this._forward, -stickY * speed * dt);
+                // Positive stickX = push right    = move in _right direction.
+                pos.position.addScaledVector(this._right,    stickX * speed * dt);
+
+              }
+
+            }
+
+          }
+
+
+          // ── Right stick: snap turn 45° ───────────────────────────────────
+
+          if (rightGP) {
+
+            const stickX = rightGP.axes[2] || 0;
+
+            if (Math.abs(stickX) > 0.6 && !this._snapUsed) {
+
+              // Positive stickX = push right = turn right (negative Y rotation).
+              const snapRad = stickX > 0
+                ? -THREE.MathUtils.degToRad(45)
+                :  THREE.MathUtils.degToRad(45);
+
+              this.el.object3D.rotation.y += snapRad;
+              this._snapUsed = true;
+
+            } else if (Math.abs(stickX) < 0.3) {
+
+              this._snapUsed = false;
+
+            }
+
+          }
+
+        }
+
+      });
+
+
+      /**
        * COMPONENT: VR GRAB ROTATION (SPATIAL TRACKING)
        * ---------------------------
-       * Replaces the auto-spin with 1:1 hand tracking.
-       * Restricted to +/- 30 degrees.
+       * 1:1 controller tracking for tilting the folio. ±30° clamp.
+       * Continuous haptic scales with movement speed.
+       * Trigger only. Completely inactive on desktop.
        */
 
       AFRAME.registerComponent('vr-grab-rotate', {
@@ -105,7 +239,7 @@
 
               this.activeController.object3D.getWorldPosition(this.previousControllerPos);
 
-              this.triggerHaptic(0.6, 50); // Heavy grab pulse
+              this.triggerHaptic(0.6, 50);
 
             }
 
@@ -138,15 +272,13 @@
 
           let deltaY = this.currentControllerPos.y - this.previousControllerPos.y;
 
-
           const sensitivity = 300;
 
-          let rot = this.el.getAttribute('rotation');
+          let rot  = this.el.getAttribute('rotation');
 
           let nextX = Math.max(-30, Math.min(30, rot.x - (deltaY * sensitivity)));
 
           let nextY = Math.max(-30, Math.min(30, rot.y + (deltaX * sensitivity)));
-
 
           this.el.setAttribute('rotation', { x: nextX, y: nextY, z: 0 });
 
@@ -156,9 +288,7 @@
 
           if (movement > 0.0001) {
 
-            const intensity = Math.min(0.5, Math.max(0.1, movement * 500));
-
-            this.triggerHaptic(intensity, 20);
+            this.triggerHaptic(Math.min(0.5, Math.max(0.1, movement * 500)), 20);
 
           }
 
@@ -200,54 +330,32 @@
        * Rolling-cylinder vertex deformation page curl.
        *
        * ── VR input ─────────────────────────────────────────────────────────
-       * A button (right controller) → right-side curl → advances forward
-       *   through the pages array (+1).
-       * X button (left  controller) → left-side  curl → goes backward (-1).
+       * A button (right controller) → right-side curl → forward (+1).
+       * X button (left  controller) → left-side  curl → backward (-1).
        * Hold A/X and move controller left/right to peel.
-       * Release at ≥ 50 % progress → completeCurl → doSwap + sound.
-       * Release at  < 50 % progress → snapBack → no swap.
+       * Release at >= 50% → completeCurl → doSwap + sound.
+       * Release at  < 50% → snapBack → no swap.
+       *
+       * ── Desktop curl drag ────────────────────────────────────────────────
+       * Left-click on the bottom-right corner zone then drag LEFT  = forward.
+       * Left-click on the bottom-left  corner zone then drag RIGHT = backward.
+       * Release at >= 50% → complete. Release at < 50% → snap back.
+       * startMouseX is captured from the live _mouseX tracker (a permanent
+       * window mousemove listener) because A-Frame cursor events do not carry
+       * native clientX. _onMouseMoveCurl and _onMouseUpCurl are added to
+       * window when a desktop curl begins and cleaned up on remove().
        *
        * ── Multi-folio support ───────────────────────────────────────────────
-       * The curl reads scene.pages (set by scriptorium-logic) to determine
-       * the destination texture for the back page. It calls scene.doSwap(dir)
-       * to update the folio, which cycles through the pages array correctly
-       * regardless of how many pages exist.
+       * Reads scene.pages for destination texture. Calls scene.doSwap(dir).
        *
        * ── Freeze prevention (two-layer defence) ────────────────────────────
-       * LAYER 1 — Gamepad polling in tick():
-       *   Every frame, tick() reads the physical button state directly from
-       *   the gamepad API (button index 4 = A on right, X on left for Quest 2
-       *   Touch controllers). If the button is no longer pressed but
-       *   activeController is still set, tick() triggers completeCurl or
-       *   snapBack immediately — without waiting for any event. This means
-       *   a missed abuttonup is caught within one frame (~16 ms).
-       *
-       * LAYER 2 — Watchdog timeout:
-       *   startCurl() sets a 3500 ms setTimeout. If isCurling is still true
-       *   when it fires — meaning neither normal completion, snap-back, nor
-       *   polling rescued the situation — resetCurl() is called automatically.
-       *   resetCurl() always clears the watchdog, so it never fires during a
-       *   normal turn.
-       *
-       * ── Desktop ──────────────────────────────────────────────────────────
-       * Click either bottom corner zone → instant forward swap + sound.
+       * LAYER 1 — Gamepad polling in tick().
+       * LAYER 2 — Watchdog setTimeout (3500 ms).
        *
        * ── Isolation guarantees ─────────────────────────────────────────────
-       * Trigger: 100 % dedicated to vr-grab-rotate. Curl uses A/X only.
-       * Raycaster: corners have clickable removed in VR via enter-vr.
-       * Hotspots: isHotspotTargeted() guard — hotspot toggle takes priority.
-       * Opacity: folio transparency set via direct Three.js only — A-Frame's
-       *   material component src state is never touched, so SWAP PAGE works.
-       * Animation abort: _animAborted flag + captured curlSide prevent rAF
-       *   loops from calling doSwap after a resetCurl.
-       *
-       * ── Rolling-cylinder formula ──────────────────────────────────────────
-       * R = 0.04 m.  Arc width = π × R ≈ 12.6 cm.
-       * Right peel: peelX = 0.55 − peelProgress × 1.1
-       *   d ≤ 0      → x = x0,                  z = 0
-       *   0 < d ≤ πR → x = peelX + R·sin(d/R),  z = R·(1−cos(d/R))
-       *   d > πR     → x = x0,                  z = −0.002
-       * Mirror for left peel.
+       * Trigger: 100% dedicated to vr-grab-rotate. Curl uses A/X or left-click.
+       * Left-click on folio BODY does NOT tilt (drag-rotate uses right-click).
+       * Opacity: Three.js direct — A-Frame material src untouched, SWAP works.
        */
 
       AFRAME.registerComponent('page-curl', {
@@ -269,6 +377,14 @@
           this.R                = 0.04;
           this._animAborted     = false;
           this._watchdog        = null;
+
+          // Track native mouse X continuously so we can read it on the
+          // A-Frame cursor mousedown (which doesn't carry clientX).
+          this._mouseX = 0;
+
+          this._trackMouse = (e) => { this._mouseX = e.clientX; };
+
+          window.addEventListener('mousemove', this._trackMouse);
 
 
           scene.addEventListener('enter-vr', () => {
@@ -354,17 +470,12 @@
 
 
           // ── completeCurl ──────────────────────────────────────────────────
-          // Stored as this._completeCurl so tick() can call it directly.
-          // curlSide captured locally — resetCurl() nulling it mid-flight
-          // does not corrupt the animation. _animAborted checked every frame.
-          // Calls scene.doSwap(dir, silent=true) — the page-turn sound has
-          // already fired so the UI click sound is suppressed.
 
           this._completeCurl = () => {
 
             playPageTurn();
 
-            this.activeController = null;   // stops tick() polling loop
+            this.activeController = null;
 
             const startProg    = this.peelProgress;
             const capturedSide = this.curlSide;
@@ -387,7 +498,7 @@
                   if (this._animAborted) return;
                   const dir = capturedSide === 'right' ? 1 : -1;
                   this.resetCurl();
-                  if (scene.doSwap) scene.doSwap(dir, true); // true = silent
+                  if (scene.doSwap) scene.doSwap(dir, true);
                 }, 50);
               }
             };
@@ -400,7 +511,7 @@
 
           this._snapBack = () => {
 
-            this.activeController = null;   // stops tick() polling loop
+            this.activeController = null;
 
             const startProg    = this.peelProgress;
             const capturedSide = this.curlSide;
@@ -431,10 +542,6 @@
 
 
           // ── startCurl ─────────────────────────────────────────────────────
-          // Reads scene.pages to find the destination texture for backPage.
-          // Right curl = advance forward (+1), left curl = go backward (-1).
-          // scene.pages is set by scriptorium-logic during its init(), which
-          // completes before any user interaction can trigger a curl.
 
           const startCurl = (side, controllerEl) => {
 
@@ -449,11 +556,6 @@
             if (folioMesh && folioMesh.material) {
               if (folioMesh.material.map) {
                 this.curlMat.map            = folioMesh.material.map;
-                // Improve texture quality on the curl surface.
-                // minFilter = LinearFilter prevents mipmap blurring on the arc.
-                // anisotropy = 16 sharpens at oblique angles during the peel.
-                // Note: this modifies the shared texture object — this is fine
-                // since both settings are quality improvements for the folio too.
                 this.curlMat.map.minFilter  = THREE.LinearFilter;
                 this.curlMat.map.anisotropy = Math.min(16,
                   folio.sceneEl.renderer
@@ -467,12 +569,9 @@
               this.curlMat.roughness = folioMesh.material.roughness;
             }
 
-            // Show the destination texture behind the peeling page.
             this.backPage.setAttribute('src', pages[nextIdx].src);
             this.backPage.setAttribute('visible', 'true');
 
-            // Hide folio via Three.js directly — never touches A-Frame's
-            // material component, so src is completely unaffected.
             if (folioMesh && folioMesh.material) {
               folioMesh.material.transparent = true;
               folioMesh.material.opacity     = 0;
@@ -488,42 +587,75 @@
             this.activeController = controllerEl || null;
 
             if (this.activeController) {
+              // VR: record controller world X as start reference.
               this.activeController.object3D.getWorldPosition(this._ctrlPos);
               this.startX = this._ctrlPos.x;
+            } else {
+              // Desktop: record current mouse X as start reference.
+              this.startMouseX = this._mouseX;
             }
 
             this.updateCurl(0, side);
 
-            // LAYER 2 — Watchdog: auto-reset if still curling after 3500 ms.
             this._watchdog = setTimeout(() => {
               if (this.isCurling) { this.resetCurl(); }
             }, 3500);
           };
 
 
-          // ── Desktop corner handlers ───────────────────────────────────────
-          // In VR the corners have no 'clickable' class so these never fire.
-          // Desktop always advances forward (+1 direction).
+          // ── Desktop mouse handlers for curl drag ──────────────────────────
+          // _onMouseMoveCurl and _onMouseUpCurl are stored so they can be
+          // removed in the component's remove() lifecycle hook.
+
+          this._onMouseMoveCurl = (e) => {
+            if (!this.isCurling || this.isVR) return;
+
+            const dx          = this.startMouseX - e.clientX;
+            // 40% of viewport width = full page turn.
+            const sensitivity = 1 / (window.innerWidth * 0.4);
+
+            let newProgress;
+            if (this.curlSide === 'right') {
+              // Drag left (negative clientX delta → positive dx) = forward peel.
+              newProgress = Math.max(0, Math.min(1,  dx * sensitivity));
+            } else {
+              // Drag right (positive clientX delta → negative dx) = backward peel.
+              newProgress = Math.max(0, Math.min(1, -dx * sensitivity));
+            }
+
+            this.peelProgress = newProgress;
+            this.updateCurl(this.peelProgress, this.curlSide);
+          };
+
+          this._onMouseUpCurl = () => {
+            if (!this.isCurling || this.isVR) return;
+            if (this.peelProgress >= 0.5) {
+              this._completeCurl();
+            } else {
+              this._snapBack();
+            }
+          };
+
+          window.addEventListener('mousemove', this._onMouseMoveCurl);
+          window.addEventListener('mouseup',   this._onMouseUpCurl);
+
+
+          // ── Corner mousedown handlers ─────────────────────────────────────
 
           this.rightCorner.addEventListener('mousedown', (evt) => {
             evt.stopPropagation();
-            if (!this.isVR) {
-              playPageTurn();
-              if (scene.doSwap) scene.doSwap(1, true);
-            }
+            if (this.isVR) return; // VR handled by abuttondown below
+            startCurl('right', null);
           });
 
           this.leftCorner.addEventListener('mousedown', (evt) => {
             evt.stopPropagation();
-            if (!this.isVR) {
-              playPageTurn();
-              if (scene.doSwap) scene.doSwap(-1, true);
-            }
+            if (this.isVR) return;
+            startCurl('left', null);
           });
 
 
-          // ── VR A/X button event handlers ──────────────────────────────────
-          // These are the fast path. tick() polling (Layer 1) is the fallback.
+          // ── VR A/X button handlers ────────────────────────────────────────
 
           scene.addEventListener('loaded', () => {
 
@@ -545,7 +677,7 @@
 
               rightCtrl.addEventListener('abuttonup', () => {
                 if (!this.isCurling || !this.isVR) return;
-                if (!this.activeController)        return; // tick() already handled it
+                if (!this.activeController)        return;
                 if (this.peelProgress >= 0.5) {
                   this._completeCurl();
                 } else {
@@ -565,7 +697,7 @@
 
               leftCtrl.addEventListener('xbuttonup', () => {
                 if (!this.isCurling || !this.isVR) return;
-                if (!this.activeController)        return; // tick() already handled it
+                if (!this.activeController)        return;
                 if (this.peelProgress >= 0.5) {
                   this._completeCurl();
                 } else {
@@ -579,12 +711,6 @@
 
         },
 
-
-        /**
-         * updateCurl
-         * ----------
-         * Rolling-cylinder vertex deformation applied to curlGeo.
-         */
 
         updateCurl: function (peelProgress, side) {
 
@@ -624,14 +750,6 @@
         },
 
 
-        /**
-         * resetCurl
-         * ---------
-         * Clears the watchdog timer first, then sets _animAborted so any
-         * running rAF loop exits without calling doSwap.
-         * Restores folio opacity via Three.js only — src unaffected.
-         */
-
         resetCurl: function () {
 
           clearTimeout(this._watchdog);
@@ -664,17 +782,9 @@
         },
 
 
-        /**
-         * tick
-         * ----
-         * LAYER 1 — Gamepad polling.
-         * Button index 4 = A (right Touch) and X (left Touch) on Quest 2.
-         * If the button is no longer held, resolve the curl immediately
-         * regardless of whether abuttonup/xbuttonup was delivered.
-         */
-
         tick: function () {
 
+          // VR only: gamepad polling (Layer 1 freeze prevention).
           if (!this.isCurling || !this.isVR || !this.activeController) return;
 
           const tc = this.activeController.components &&
@@ -683,10 +793,10 @@
           if (tc && tc.controller && tc.controller.gamepad) {
 
             const gp  = tc.controller.gamepad;
-            const btn = gp.buttons[4]; // A (right) and X (left) = index 4
+            const btn = gp.buttons[4];
 
             if (btn && !btn.pressed) {
-              this.activeController = null; // prevent double-fire on next tick
+              this.activeController = null;
               if (this.peelProgress >= 0.5) {
                 this._completeCurl();
               } else {
@@ -712,15 +822,32 @@
           this.peelProgress = newProgress;
           this.updateCurl(this.peelProgress, this.curlSide);
 
+        },
+
+
+        remove: function () {
+
+          // Clean up all window-level listeners added by this component.
+          window.removeEventListener('mousemove', this._trackMouse);
+          window.removeEventListener('mousemove', this._onMouseMoveCurl);
+          window.removeEventListener('mouseup',   this._onMouseUpCurl);
+
         }
 
       });
 
 
       /**
-       * COMPONENT: DESKTOP DRAG ROTATE (ZOOM TILT FIX)
-       * ----------------------------------------------
-       * Fixed to use movementX/Y. Restricted to +/- 30 degrees.
+       * COMPONENT: DESKTOP DRAG ROTATE
+       * --------------------------------
+       * RIGHT-click drag to tilt the folio on desktop.
+       * Left-click is reserved for curl drag and hotspot activation.
+       *
+       * Uses native window events (not A-Frame cursor events) to detect
+       * button identity. Context menu is suppressed while over the canvas
+       * so right-click drag feels natural.
+       *
+       * Completely inactive in VR (vr-grab-rotate handles tilt there).
        */
 
       AFRAME.registerComponent('drag-rotate', {
@@ -731,49 +858,46 @@
 
           this.isVR = false;
 
-          this.el.sceneEl.addEventListener('enter-vr', () => { this.isVR = true; });
+          this.el.sceneEl.addEventListener('enter-vr', () => { this.isVR = true;  });
 
-          this.el.sceneEl.addEventListener('exit-vr', () => { this.isVR = false; });
+          this.el.sceneEl.addEventListener('exit-vr',  () => { this.isVR = false; });
 
-          this.el.addEventListener('mousedown', () => {
 
-            if (!this.isVR) this.ifMouseDown = true;
-
-          });
+          // Native window events so we can check e.button.
+          this.onMouseDown = (e) => {
+            // button 2 = right mouse button.
+            if (!this.isVR && e.button === 2) this.ifMouseDown = true;
+          };
 
           this.onMouseUp = () => { this.ifMouseDown = false; };
 
           this.onMouseMove = (e) => {
-
-            if (this.ifMouseDown) {
-
-              let rotation = this.el.getAttribute('rotation');
-
-              let deltaX = (e.movementX !== undefined ? e.movementX : 0) * 0.15;
-
-              let deltaY = (e.movementY !== undefined ? e.movementY : 0) * 0.15;
-
-              let nextX = Math.max(-30, Math.min(30, rotation.x + deltaY));
-
-              let nextY = Math.max(-30, Math.min(30, rotation.y + deltaX));
-
-              this.el.setAttribute('rotation', { x: nextX, y: nextY, z: 0 });
-
-            }
-
+            if (!this.ifMouseDown) return;
+            let rotation = this.el.getAttribute('rotation');
+            let deltaX   = (e.movementX !== undefined ? e.movementX : 0) * 0.15;
+            let deltaY   = (e.movementY !== undefined ? e.movementY : 0) * 0.15;
+            let nextX    = Math.max(-30, Math.min(30, rotation.x + deltaY));
+            let nextY    = Math.max(-30, Math.min(30, rotation.y + deltaX));
+            this.el.setAttribute('rotation', { x: nextX, y: nextY, z: 0 });
           };
 
-          window.addEventListener('mouseup', this.onMouseUp);
+          // Prevent the browser context menu during right-click drag.
+          this.onContextMenu = (e) => e.preventDefault();
 
-          window.addEventListener('mousemove', this.onMouseMove);
+
+          window.addEventListener('mousedown',   this.onMouseDown);
+          window.addEventListener('mouseup',     this.onMouseUp);
+          window.addEventListener('mousemove',   this.onMouseMove);
+          window.addEventListener('contextmenu', this.onContextMenu);
 
         },
 
         remove: function () {
 
-          window.removeEventListener('mousemove', this.onMouseMove);
-
-          window.removeEventListener('mouseup', this.onMouseUp);
+          window.removeEventListener('mousedown',   this.onMouseDown);
+          window.removeEventListener('mouseup',     this.onMouseUp);
+          window.removeEventListener('mousemove',   this.onMouseMove);
+          window.removeEventListener('contextmenu', this.onContextMenu);
 
         }
 
@@ -875,13 +999,12 @@
       /**
        * COMPONENT: FOLIO HOTSPOTS
        * -------------------------
-       * Tick-based raycaster approach — no zone planes, no visual
-       * indicators. Completely invisible hotspots that never interfere
-       * with the folio tilt or haptic feedback.
+       * Tick-based raycaster approach — no zone planes, no visual indicators.
        *
-       * tick() checks both controller raycasters' intersections with
-       * the folio and converts the hit point to folio-local coordinates.
-       * A/X buttons toggle the panel whose zone is currently aimed at.
+       * VR:      A/X buttons toggle the targeted panel.
+       * Desktop: Left-click on the folio toggles the targeted panel.
+       *          tick() checks the desktop #cursor raycaster so targetedPanel
+       *          is updated correctly without any VR controller present.
        */
 
       AFRAME.registerComponent('folio-hotspots', {
@@ -890,20 +1013,28 @@
 
           const folio = this.el;
 
-          this.targetedPanel = null;
+          this.targetedPanel  = null;
 
-          this.zones = [];
+          this.zones          = [];
 
-          this._localPt = new THREE.Vector3();
+          this._localPt       = new THREE.Vector3();
 
-          this.rightCtrl = null;
+          this.rightCtrl      = null;
 
-          this.leftCtrl  = null;
+          this.leftCtrl       = null;
+
+          this.desktopCursor  = null;
+
+          this.isVR           = false;
+
+          const scene = this.el.sceneEl;
+
+          scene.addEventListener('enter-vr', () => { this.isVR = true;  });
+
+          scene.addEventListener('exit-vr',  () => { this.isVR = false; });
 
 
           const makeHotspot = (cx, cy, panelPos, labelText) => {
-
-            // Info panel — no clickable class, trigger cannot touch it.
 
             const panel = document.createElement('a-entity');
 
@@ -959,17 +1090,10 @@
           };
 
 
-          // Right hotspot: zone centre (0.24, -0.02), panel above at (0.24, 0.17)
-
-          makeHotspot(0.24, -0.02, '0.24 0.17 0.06', 'Info. test one');
-
-
-          // Left hotspot: zone centre (-0.24, -0.02), panel above at (-0.24, 0.17)
+          makeHotspot( 0.24, -0.02,  '0.24 0.17 0.06', 'Info. test one');
 
           makeHotspot(-0.24, -0.02, '-0.24 0.17 0.06', 'Info. test two');
 
-
-          // Toggle the currently-targeted panel.
 
           const toggle = () => {
 
@@ -986,11 +1110,21 @@
           };
 
 
-          this.el.sceneEl.addEventListener('loaded', () => {
+          // Desktop: left-click on the folio body triggers toggle.
+          // toggle() checks targetedPanel first — so clicking with no hotspot
+          // aimed has no effect.
+          folio.addEventListener('click', () => {
+            if (!this.isVR) toggle();
+          });
 
-            this.rightCtrl = document.querySelector('[laser-controls="hand: right"]');
 
-            this.leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
+          scene.addEventListener('loaded', () => {
+
+            this.rightCtrl    = document.querySelector('[laser-controls="hand: right"]');
+
+            this.leftCtrl     = document.querySelector('[laser-controls="hand: left"]');
+
+            this.desktopCursor = document.querySelector('#cursor');
 
             if (this.rightCtrl) this.rightCtrl.addEventListener('abuttondown', toggle);
 
@@ -1003,12 +1137,14 @@
 
         tick: function () {
 
-          const folio   = this.el;
-
-          const ctrls   = [this.rightCtrl, this.leftCtrl];
+          const folio    = this.el;
 
           let hitZoneIdx = -1;
 
+
+          // ── Check VR controllers ──────────────────────────────────────────
+
+          const ctrls = [this.rightCtrl, this.leftCtrl];
 
           for (let c = 0; c < ctrls.length; c++) {
 
@@ -1024,26 +1160,18 @@
 
             if (idx < 0 || !rc.intersections[idx]) continue;
 
-
             this._localPt.copy(rc.intersections[idx].point);
 
             folio.object3D.worldToLocal(this._localPt);
-
 
             for (let i = 0; i < this.zones.length; i++) {
 
               const z = this.zones[i];
 
-              if (
-
-                Math.abs(this._localPt.x - z.cx) <= z.halfW &&
-
-                Math.abs(this._localPt.y - z.cy) <= z.halfH
-
-              ) {
+              if (Math.abs(this._localPt.x - z.cx) <= z.halfW &&
+                  Math.abs(this._localPt.y - z.cy) <= z.halfH) {
 
                 hitZoneIdx = i;
-
                 break;
 
               }
@@ -1055,7 +1183,43 @@
           }
 
 
-          // Expose the currently aimed-at panel for the toggle function.
+          // ── Check desktop cursor (only when VR controllers found nothing) ─
+
+          if (hitZoneIdx < 0 && !this.isVR && this.desktopCursor) {
+
+            const rc = this.desktopCursor.components &&
+                       this.desktopCursor.components.raycaster;
+
+            if (rc && rc.intersectedEls) {
+
+              const idx = rc.intersectedEls.indexOf(folio);
+
+              if (idx >= 0 && rc.intersections[idx]) {
+
+                this._localPt.copy(rc.intersections[idx].point);
+
+                folio.object3D.worldToLocal(this._localPt);
+
+                for (let i = 0; i < this.zones.length; i++) {
+
+                  const z = this.zones[i];
+
+                  if (Math.abs(this._localPt.x - z.cx) <= z.halfW &&
+                      Math.abs(this._localPt.y - z.cy) <= z.halfH) {
+
+                    hitZoneIdx = i;
+                    break;
+
+                  }
+
+                }
+
+              }
+
+            }
+
+          }
+
 
           this.targetedPanel = hitZoneIdx >= 0 ? this.zones[hitZoneIdx].panel : null;
 
@@ -1067,15 +1231,14 @@
       /**
        * COMPONENT: PANEL AUDIO
        * ----------------------
-       * Attaches to the translation and transcription panel entities.
-       * Invisible clickable zone fires strong haptic (0.65, 80ms) on hover.
-       * A/X buttons toggle audio playback for the current folio page.
+       * Invisible clickable zone on each text panel.
+       * Hover: strong haptic (0.65, 80ms) in VR.
+       * A/X (VR): toggle audio for the current page.
        *
        * Schema:
-       *   type — 'latin' or 'english'. Reads the matching audio src from
-       *          scene.pages[currentPage].latinSrc / .englishSrc.
-       *          Adding a new page only requires updating the pages array;
-       *          this component needs no changes.
+       *   type — 'latin' or 'english'. Reads from scene.pages[].latinSrc
+       *          or .englishSrc. Adding a new page requires only updating
+       *          the pages[] array in scriptorium-logic.
        */
 
       AFRAME.registerComponent('panel-audio', {
@@ -1132,23 +1295,10 @@
           };
 
 
-          zone.addEventListener('mouseenter', (evt) => {
+          zone.addEventListener('mouseenter', (evt) => { isTargeted = true;  pulseHaptic(evt); });
 
-            isTargeted = true;
+          zone.addEventListener('mouseleave', ()    => { isTargeted = false; });
 
-            pulseHaptic(evt);
-
-          });
-
-          zone.addEventListener('mouseleave', () => {
-
-            isTargeted = false;
-
-          });
-
-
-          // Reads from scene.pages — works for any number of pages.
-          // scene.pages is set by scriptorium-logic before any interaction.
 
           const getAudio = () => {
 
@@ -1156,9 +1306,9 @@
 
             if (!pages) return null;
 
-            const idx  = (scene.currentAudioPage || 1) - 1;
+            const idx   = (scene.currentAudioPage || 1) - 1;
 
-            const page = pages[idx];
+            const page  = pages[idx];
 
             if (!page) return null;
 
@@ -1177,7 +1327,6 @@
 
             if (!audio) return;
 
-
             if (scene.currentPanelAudio && scene.currentPanelAudio !== audio) {
 
               scene.currentPanelAudio.pause();
@@ -1187,7 +1336,6 @@
               scene.currentPanelAudio = null;
 
             }
-
 
             if (audio.paused) {
 
@@ -1229,22 +1377,12 @@
        * COMPONENT: SCRIPTORIUM LOGIC
        * ----------------------------
        * Central controller. Manages the pages array, page swaps,
-       * materiality settings, zoom, scale, and audio playback.
+       * materiality, zoom, scale, and audio.
        *
        * ── Adding a new folio ────────────────────────────────────────────────
-       * 1. Add <img> and <audio> elements to <a-assets> in the HTML.
+       * 1. Add <img> and <audio> elements to <a-assets>.
        * 2. Add a new entry to the pages[] array below.
-       *    Match the property names exactly as shown.
-       * No other code changes are needed anywhere.
-       *
-       * ── pages[] array structure ───────────────────────────────────────────
-       *   src        — asset selector for the folio image, e.g. '#manuscript3'
-       *   lat        — full Latin transcription text
-       *   eng        — full English translation text
-       *   title      — text shown in the info panel (left of folio)
-       *   hover      — text shown in the hover tooltip above the folio
-       *   latinSrc   — asset selector for the Latin audio, e.g. '#latin3-track'
-       *   englishSrc — asset selector for the English audio, e.g. '#english3-track'
+       * No other code changes are needed.
        */
 
       AFRAME.registerComponent('scriptorium-logic', {
@@ -1282,7 +1420,7 @@
 
           let materialityMode = false;
 
-          let currentPage     = 1;         // 1-based index into pages[]
+          let currentPage     = 1;
 
           this.el.currentAudioPage = 1;
 
@@ -1303,8 +1441,10 @@
 
 
           // ── Page data ─────────────────────────────────────────────────────
-          // To add a folio: add an entry here AND add its assets to <a-assets>.
-          // All other code adapts automatically.
+          // Updated text from 02/04/26 version.
+          // NOTE: Unicode ellipsis (U+2026 "…") replaced with three ASCII
+          // periods "..." throughout, because A-Frame's default MSDF bitmap
+          // font does not include U+2026 and renders it as a blank character.
 
           const lat1 = "De Scocia\n\nScocia est insule in quo est anglia suprema portio et in aquilone versa. Flumibus haud magnis et monte quodam ab anglia discreta. Hic nos brunali tempore fuimus cum sol paulo amplius quam tris horis terram illusiaret. Jacobus eo tempore regnabat quadratus et multo abdomine grauis. qui cum olim in anglia captus . xi . annis in custodia fuisset. ac dimissus tandem suscepta ex anglica coniuge domum reuersus plures regulos gladio percussisset. et ipse tandem a suis domesticis interfectus est. Inter quos vltione pacata filius eius regnum suscepit. Audiueramus nos olim arborem esse in scocia quae supra ripas fluminis enata fructus produceret anetarum formam habentes et eos cum quidem maturitati proximi essent sponte sua decider. alios in terram. alios in aquam. et in terra deiectos putrescere. in aquam vero dimersos mox aviatos enatare sub aquis et in aera plumis plenisque euestigio euolare. De quare cum aidius inuestigaremus didicimus miracula spe remotius fugere famosamque arborem non in scocia sed apud olchades insulas inueniri. Illud tamen nobis in scocia miraculum praesentatum est. nam pauperes pene nudos ad ecclesias mendicantes acceptis lapidibus elemosine gratia datis letos abiisse conspeximus. Id genus lapidis siue sulphurea siue alia pingues materia praeditum pro ligno quo regio nuda est comburitur.";
 
@@ -1312,11 +1452,13 @@
 
           const lat2 = "Quorum cateruis sic gloriose circumuallatus et in gloria humane potencie sic confisus usque ad locum qui bannokburn dicitur perueniens tentoria sua fixit Cui rex robertus cum paucis respectu multitudinis eius in domino confidens et in deum virtutem faciens ac beatum andream apostolum et sanctum iohannem baptistam in eius auxilium ad miserabilem populum scocie de seruitute indebita liberandum postulans cum dicto rege anglie mortale commisit bellum ac ipsum cum omni pompa sua et innumerabili potencia auxiliante altissimo cuius est victoriam dare, et in cuius manu sunt omnes fines terre in fugam conuertit ubi comes glouernie et multi nobiles anglie ceciderunt interfecti... alii fugati . alii capti . alii occisi... . per captiuos enim non solum regina scocie cum suis liberati sunt dimissa est ymmo eciam omnes alii scoti in carceribus deputati sine redempcione liberati sunt . Ac eciam omnes alii in dicto bello existentes inestimabiliter sunt ditati Inter quos captus est ille ditissimus iohannes de britania per quem liberata fuit regina scocie captiua quod absurdum esset audire reginam captiuam esse Item pro ipso liberatus est episcopus de glasguw vir venerabilis et magne senectutis in carceribus similiter per tirannum detentus londoniis [.]";
 
-          const eng2 = "Surrounded so gloriously by his companies, and trusting so confidently in the glory of human power, he [King Edward II of England] came as far as the place called Bannockburn and pitched his tents there. Against him King Robert, with only a few men, compared with his multitude, trusting in the Lord and taking strength in God, and calling upon Blessed Andrew the Apostle and Saint John the Baptist for aid in freeing the wretched people of Scotland from unjust servitude, joined mortal battle with the said king of England. And him, with all his pomp and his innumerable power, the Most High assisting – whose prerogative it is to grant victory, and in whose hand are all the ends of the earth – he turned to flight. There the Earl of Gloucester and many nobles of England fell slain…. Others were put to flight; others were captured; others were killed… For by means of the captives not only was the queen of Scotland, with her people, set free; indeed (what is more), all the other Scots who had been assigned to prisons were freed without ransom. And also all the others who were present in the said battle were enriched beyond measure. Among these was captured that very rich man, John of Brittany, through whom the queen of Scotland was freed from captivity, something which it would be absurd even to hear, namely that a queen should be held captive. Likewise, in exchange for him, the bishop of Glasgow, a venerable man of great age, who had similarly been held in prison by the tyrant, was freed at London [.]";
+          // FIX: U+2026 (…) replaced with ... (three ASCII periods) throughout.
+          // Original had "fell slain…." and "others were killed…" which rendered
+          // as blank gaps in A-Frame's a-text component.
+          const eng2 = "Surrounded so gloriously by his companies, and trusting so confidently in the glory of human power, he [King Edward II of England] came as far as the place called Bannockburn and pitched his tents there. Against him King Robert, with only a few men, compared with his multitude, trusting in the Lord and taking strength in God, and calling upon Blessed Andrew the Apostle and Saint John the Baptist for aid in freeing the wretched people of Scotland from unjust servitude, joined mortal battle with the said king of England. And him, with all his pomp and his innumerable power, the Most High assisting - whose prerogative it is to grant victory, and in whose hand are all the ends of the earth - he turned to flight. There the Earl of Gloucester and many nobles of England fell slain.... Others were put to flight; others were captured; others were killed... For by means of the captives not only was the queen of Scotland, with her people, set free; indeed (what is more), all the other Scots who had been assigned to prisons were freed without ransom. And also all the others who were present in the said battle were enriched beyond measure. Among these was captured that very rich man, John of Brittany, through whom the queen of Scotland was freed from captivity, something which it would be absurd even to hear, namely that a queen should be held captive. Likewise, in exchange for him, the bishop of Glasgow, a venerable man of great age, who had similarly been held in prison by the tyrant, was freed at London [.]";
 
 
           // ── Pages array ───────────────────────────────────────────────────
-          // Add new folios here. Everything else updates automatically.
 
           const pages = [
             {
@@ -1337,15 +1479,12 @@
               latinSrc:   '#latin2-track',
               englishSrc: '#english2-track'
             }
-            // Add more pages here — no other code changes needed.
           ];
 
-          // Expose pages on the scene element so page-curl and panel-audio
-          // can access them without being coupled to scriptorium-logic.
           this.el.pages = pages;
 
 
-          // ── Populate initial page ─────────────────────────────────────────
+          // ── Initial page ──────────────────────────────────────────────────
 
           transcrText.setAttribute('value', pages[0].lat);
 
@@ -1358,15 +1497,9 @@
 
 
           // ── doSwap ────────────────────────────────────────────────────────
-          // Central page-switching function used by:
-          //   — the SWAP PAGE UI button (dir = +1, silent = false)
-          //   — the page-curl component (dir = ±1, silent = true)
-          //   — the desktop corner zones (dir = ±1, silent = true)
-          //
-          // dir:    +1 = forward, -1 = backward. Wraps with modular arithmetic
-          //         so any number of pages works correctly.
-          // silent: if true, suppresses the UI click sound (the curl already
-          //         played the page-turn sound).
+          // dir: +1 = forward, -1 = backward. Wraps via modular arithmetic.
+          // silent: true suppresses the UI click sound (curl already played
+          //         its own page-turn sound).
 
           const doSwap = (dir, silent) => {
 
@@ -1400,11 +1533,10 @@
 
           };
 
-          // Expose on scene element so page-curl can call it directly.
           this.el.doSwap = doSwap;
 
 
-          // ── Zoom Action ───────────────────────────────────────────────────
+          // ── Zoom ──────────────────────────────────────────────────────────
 
           document.querySelector('#zoom-button').addEventListener('click', () => {
 
@@ -1429,7 +1561,7 @@
           });
 
 
-          // ── Materiality Toggle ────────────────────────────────────────────
+          // ── Materiality ───────────────────────────────────────────────────
 
           document.querySelector('#mat-button').addEventListener('click', () => {
 
@@ -1448,7 +1580,7 @@
           });
 
 
-          // ── Swap Page (UI button — always goes forward) ───────────────────
+          // ── Swap Page (UI button — always forward) ────────────────────────
 
           document.querySelector('#swap-button').addEventListener('click', () => {
 
@@ -1457,7 +1589,7 @@
           });
 
 
-          // ── Scale Cycling ─────────────────────────────────────────────────
+          // ── Scale ─────────────────────────────────────────────────────────
 
           document.querySelector('#scale-button').addEventListener('click', () => {
 
@@ -1555,15 +1687,21 @@
       <a-text id="sound-ui" value="CLICK TO START" position="0 2.2 -2" align="center" color="#FFD700" width="3"></a-text>
 
 
-      <a-entity id="rig">
+      <!-- vr-locomotion is on #rig so all children (camera + controllers)
+           move together. Left thumbstick = walk/strafe, right = snap turn. -->
+
+      <a-entity id="rig" vr-locomotion>
 
         <a-entity camera look-controls wasd-controls position="0 1.6 0">
 
-          <a-cursor id="cursor" position="0 0 -0.4" scale="0.4 0.4 0.4" raycaster="objects: .clickable" color="#FFD700"
+          <a-cursor id="cursor" position="0 0 -0.4" scale="0.4 0.4 0.4"
+                    raycaster="objects: .clickable" color="#FFD700"
 
-                    animation__fusing="property: scale; from: 0.4 0.4 0.4; to: 0.04 0.04 0.04; dur: 1500; startEvents: fusing;"
+                    animation__fusing="property: scale; from: 0.4 0.4 0.4;
+                                       to: 0.04 0.04 0.04; dur: 1500; startEvents: fusing;"
 
-                    animation__reset="property: scale; to: 0.4 0.4 0.4; dur: 500; startEvents: mouseleave;">
+                    animation__reset="property: scale; to: 0.4 0.4 0.4;
+                                      dur: 500; startEvents: mouseleave;">
 
           </a-cursor>
 
@@ -1578,19 +1716,23 @@
 
       <a-entity id="zoom-anchor" position="0 1.1 -1.4">
 
-          <a-plane id="folio-object" class="clickable" drag-rotate vr-grab-rotate page-curl folio-hotspots src="#manuscript1"
+          <!-- drag-rotate now uses right-click; left-click is for curl/hotspots -->
 
+          <a-plane id="folio-object" class="clickable"
+                   drag-rotate vr-grab-rotate page-curl folio-hotspots
+                   src="#manuscript1"
                    position="0 0 0" rotation="0 0 0" width="1.1" height="0.8"
-
                    material="shader: standard; metalness: 0.1; roughness: 0.8; side: double;">
 
-              <a-entity id="candle" light="type: point; color: #ffcc77; intensity: 1.6; distance: 4;" position="0 0.5 0.5" flicker></a-entity>
+              <a-entity id="candle" light="type: point; color: #ffcc77; intensity: 1.6; distance: 4;"
+                        position="0 0.5 0.5" flicker></a-entity>
 
               <a-entity id="hover-tooltip" position="0 0.55 0.05" visible="false">
 
                   <a-plane width="0.8" height="0.15" color="black" opacity="0.8"></a-plane>
 
-                  <a-text id="hover-text" value="Liber Chronicarum" color="white" align="center" width="0.8" position="0 0 0.05"></a-text>
+                  <a-text id="hover-text" value="Liber Chronicarum" color="white"
+                          align="center" width="0.8" position="0 0 0.05"></a-text>
 
               </a-entity>
 
@@ -1607,9 +1749,11 @@
 
               <a-sphere id="scale-button" class="clickable" haptic-button position="0 -0.12 0" radius="0.04" color="#4CC3D9"><a-text value="SCALE"     position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
 
-              <a-box id="mute-button" class="clickable" haptic-button position="0 -0.25 0" width="0.06" height="0.06" depth="0.06" color="#FF4500">
+              <a-box id="mute-button" class="clickable" haptic-button
+                     position="0 -0.25 0" width="0.06" height="0.06" depth="0.06" color="#FF4500">
 
-                  <a-text id="mute-label" value="MUTE" position="0.08 0 0" scale="0.22 0.22 0.22" color="white"></a-text>
+                  <a-text id="mute-label" value="MUTE" position="0.08 0 0"
+                          scale="0.22 0.22 0.22" color="white"></a-text>
 
               </a-box>
 
@@ -1619,15 +1763,13 @@
 
               <a-plane width="0.6" height="0.4" color="#111" opacity="0.9"></a-plane>
 
-              <a-text id="info-text" value="Liber Chronicarum, 1493,\nHartmann Schedel" color="#FFD700" align="center" width="0.7" position="0 0 0.05"></a-text>
+              <a-text id="info-text" value="Liber Chronicarum, 1493,\nHartmann Schedel"
+                      color="#FFD700" align="center" width="0.7" position="0 0 0.05"></a-text>
 
           </a-entity>
 
       </a-entity>
 
-
-      <!-- panel-audio now uses type="latin"|"english" instead of src1/src2.
-           Adding a new page requires only updating the pages[] array.     -->
 
       <a-entity id="translation-panel"
                 position="-2.06 1.5 -0.75" look-at-user
@@ -1635,9 +1777,11 @@
 
           <a-plane width="1.2" height="1.8" color="#111" opacity="0.9" material="side: double;"></a-plane>
 
-          <a-text value="ENGLISH TRANSLATION" color="#FFD700" align="center" width="1.1" position="0 0.8 0.02"></a-text>
+          <a-text value="ENGLISH TRANSLATION" color="#FFD700" align="center"
+                  width="1.1" position="0 0.8 0.02"></a-text>
 
-          <a-text id="transl-text" color="white" align="center" baseline="top" width="1.05" position="0 0.6 0.02" wrap-count="50"></a-text>
+          <a-text id="transl-text" color="white" align="center" baseline="top"
+                  width="1.05" position="0 0.6 0.02" wrap-count="50"></a-text>
 
       </a-entity>
 
@@ -1648,9 +1792,11 @@
 
           <a-plane width="1.2" height="1.8" color="#111" opacity="0.9" material="side: double;"></a-plane>
 
-          <a-text value="LATIN TRANSCRIPTION" color="#FFD700" align="center" width="1.1" position="0 0.8 0.02"></a-text>
+          <a-text value="LATIN TRANSCRIPTION" color="#FFD700" align="center"
+                  width="1.1" position="0 0.8 0.02"></a-text>
 
-          <a-text id="transcr-text" color="white" align="center" baseline="top" width="1.05" position="0 0.6 0.02" wrap-count="50"></a-text>
+          <a-text id="transcr-text" color="white" align="center" baseline="top"
+                  width="1.05" position="0 0.6 0.02" wrap-count="50"></a-text>
 
       </a-entity>
 
