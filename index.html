@@ -277,9 +277,9 @@
 
           let rot  = this.el.getAttribute('rotation');
 
-          let nextX = Math.max(-30, Math.min(30, rot.x - (deltaY * sensitivity)));
+          let nextX = Math.max(-30, Math.min(30, rot.x + (deltaY * sensitivity)));
 
-          let nextY = Math.max(-30, Math.min(30, rot.y + (deltaX * sensitivity)));
+          let nextY = Math.max(-30, Math.min(30, rot.y - (deltaX * sensitivity)));
 
           this.el.setAttribute('rotation', { x: nextX, y: nextY, z: 0 });
 
