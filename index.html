@@ -1,372 +1,181 @@
 <!DOCTYPE html>
-
 <html>
-
   <head>
-
     <meta charset="utf-8">
-
     <title>Medieval Scriptorium – Test Cockpit Build</title>
-
     <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
-
-    <script src="https://unpkg.com/aframe-environment-component@1.3.2/dist/aframe-environment-component.min.js"></script>
-
-
+    <script src="https://unpkg.com/aframe-environment-component@1.3.3/dist/aframe-environment-component.min.js"></script>
     <script>
 
-      /**
-       * COMPONENT: LOOK AT USER
-       * -----------------------
-       * Ensures translation/transcription panels always face the camera.
-       */
-
       AFRAME.registerComponent('look-at-user', {
-
         init: function () {
-
           this.targetPos = new THREE.Vector3();
-
           this.panelPos  = new THREE.Vector3();
-
         },
-
         tick: function () {
-
           const sceneEl  = this.el.sceneEl;
-
           const cameraEl = sceneEl.camera ? sceneEl.camera.el : null;
-
           if (!cameraEl) return;
-
           cameraEl.object3D.getWorldPosition(this.targetPos);
-
           this.el.object3D.getWorldPosition(this.panelPos);
-
           this.el.object3D.lookAt(this.targetPos.x, this.targetPos.y, this.targetPos.z);
-
         }
-
       });
 
-
-      /**
-       * COMPONENT: VR LOCOMOTION
-       * ------------------------
-       * Joystick-based movement for VR. Attached to the #rig entity so that
-       * the camera and both controllers all move together.
-       *
-       * Left  thumbstick (axes[2], axes[3]):
-       *   Push forward/back → walk in the direction the camera faces (yaw only).
-       *   Push left/right   → strafe.
-       *   Speed: 0.004 m/ms (4 m/s). Deadzone: 0.2.
-       *
-       * Right thumbstick (axes[2]):
-       *   Flick left/right → snap-turn the rig by 45°.
-       *   Snap fires once per flick; stick must return to centre before
-       *   the next snap (prevents continuous spinning).
-       *
-       * Gamepad axis mapping for Quest 2 Touch controllers via WebXR:
-       *   axes[2] = thumbstick X,  axes[3] = thumbstick Y.
-       * If your device uses axes[0]/axes[1] instead, change the indices
-       * in the two '_getStick' calls below.
-       *
-       * Only active in VR (isVR flag). Does not interfere with desktop
-       * WASD movement (wasd-controls on the camera entity handles that).
-       */
-
       AFRAME.registerComponent('vr-locomotion', {
-
         init: function () {
-
           this.isVR      = false;
           this.leftCtrl  = null;
           this.rightCtrl = null;
           this._forward  = new THREE.Vector3();
           this._right    = new THREE.Vector3();
-          this._snapUsed = false;   // prevents continuous snap while stick held
-
+          this._snapUsed = false;
           const scene = this.el.sceneEl;
-
           scene.addEventListener('enter-vr', () => { this.isVR = true;  });
           scene.addEventListener('exit-vr',  () => { this.isVR = false; });
-
           scene.addEventListener('loaded', () => {
             this.leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
             this.rightCtrl = document.querySelector('[laser-controls="hand: right"]');
           });
-
         },
-
-
         _getGamepad: function (ctrl) {
-
           if (!ctrl) return null;
-
           const tc = ctrl.components && ctrl.components['tracked-controls'];
-
           return (tc && tc.controller && tc.controller.gamepad) || null;
-
         },
-
-
         tick: function (t, dt) {
-
           if (!this.isVR) return;
-
           const leftGP  = this._getGamepad(this.leftCtrl);
           const rightGP = this._getGamepad(this.rightCtrl);
-
-
-          // ── Left stick: walk / strafe ─────────────────────────────────────
-
           if (leftGP) {
-
-            const stickX  = leftGP.axes[2] || 0;   // thumbstick X (strafe)
-            const stickY  = leftGP.axes[3] || 0;   // thumbstick Y (forward/back)
+            const stickX   = leftGP.axes[2] || 0;
+            const stickY   = leftGP.axes[3] || 0;
             const deadzone = 0.2;
-
             if (Math.abs(stickX) > deadzone || Math.abs(stickY) > deadzone) {
-
-              // Move relative to the direction the camera is facing (yaw only).
               const camEl = this.el.sceneEl.camera ? this.el.sceneEl.camera.el : null;
-
               if (camEl) {
-
                 camEl.object3D.getWorldDirection(this._forward);
                 this._forward.y = 0;
                 this._forward.negate();
                 this._forward.normalize();
-
-                this._right.crossVectors(
-                  this._forward,
-                  new THREE.Vector3(0, 1, 0)
-                ).normalize();
-
-                const speed = 0.004;                  // metres per millisecond
+                this._right.crossVectors(this._forward, new THREE.Vector3(0, 1, 0)).normalize();
+                const speed = 0.004;
                 const pos   = this.el.object3D;
-
-                // Negative stickY = push forward = move in _forward direction.
                 pos.position.addScaledVector(this._forward, -stickY * speed * dt);
-                // Positive stickX = push right    = move in _right direction.
                 pos.position.addScaledVector(this._right,    stickX * speed * dt);
-
               }
-
             }
-
           }
-
-
-          // ── Right stick: snap turn 45° ───────────────────────────────────
-
           if (rightGP) {
-
             const stickX = rightGP.axes[2] || 0;
-
             if (Math.abs(stickX) > 0.6 && !this._snapUsed) {
-
-              // Positive stickX = push right = turn right (negative Y rotation).
-              const snapRad = stickX > 0
-                ? -THREE.MathUtils.degToRad(45)
-                :  THREE.MathUtils.degToRad(45);
-
+              const snapRad = stickX > 0 ? -THREE.MathUtils.degToRad(45) : THREE.MathUtils.degToRad(45);
               this.el.object3D.rotation.y += snapRad;
               this._snapUsed = true;
-
             } else if (Math.abs(stickX) < 0.3) {
-
               this._snapUsed = false;
-
             }
-
           }
-
         }
-
       });
-
-
-      /**
-       * COMPONENT: VR GRAB ROTATION (SPATIAL TRACKING)
-       * ---------------------------
-       * 1:1 controller tracking for tilting the folio. ±30° clamp.
-       * Continuous haptic scales with movement speed.
-       * Trigger only. Completely inactive on desktop.
-       */
 
       AFRAME.registerComponent('vr-grab-rotate', {
-
         init: function () {
-
-          this.grabbing = false;
-
-          this.activeController = null;
-
+          this.grabbing              = false;
+          this.activeController      = null;
           this.previousControllerPos = new THREE.Vector3();
-
-          this.currentControllerPos = new THREE.Vector3();
-
-
+          this.currentControllerPos  = new THREE.Vector3();
           this.triggerHaptic = (intensity, duration) => {
-
             if (this.activeController && this.activeController.components['tracked-controls']) {
-
               const controller = this.activeController.components['tracked-controls'].controller;
-
               if (controller && controller.gamepad && controller.gamepad.hapticActuators.length > 0) {
-
                 controller.gamepad.hapticActuators[0].pulse(intensity, duration);
-
               }
-
             }
-
           };
-
-
-          this.el.sceneEl.addEventListener('enter-vr', () => { this.isVR = true; });
-
-          this.el.sceneEl.addEventListener('exit-vr', () => { this.isVR = false; });
-
-
+          this.el.sceneEl.addEventListener('enter-vr', () => { this.isVR = true;  });
+          this.el.sceneEl.addEventListener('exit-vr',  () => { this.isVR = false; });
           this.el.addEventListener('mousedown', (evt) => {
-
             if (this.isVR && evt.detail.cursorEl) {
-
-              this.grabbing = true;
-
+              this.grabbing         = true;
               this.activeController = evt.detail.cursorEl;
-
               this.activeController.object3D.getWorldPosition(this.previousControllerPos);
-
               this.triggerHaptic(0.6, 50);
-
             }
-
           });
-
-
-          const stopGrabbing = () => {
-
-            this.grabbing = false;
-
-            this.activeController = null;
-
-          };
-
-
-          this.el.addEventListener('mouseup', stopGrabbing);
-
+          const stopGrabbing = () => { this.grabbing = false; this.activeController = null; };
+          this.el.addEventListener('mouseup',    stopGrabbing);
           this.el.addEventListener('mouseleave', stopGrabbing);
-
         },
-
-
         tick: function () {
-
           if (!this.grabbing || !this.activeController) return;
-
           this.activeController.object3D.getWorldPosition(this.currentControllerPos);
-
-          let deltaX = this.currentControllerPos.x - this.previousControllerPos.x;
-
-          let deltaY = this.currentControllerPos.y - this.previousControllerPos.y;
-
+          const deltaX      = this.currentControllerPos.x - this.previousControllerPos.x;
+          const deltaY      = this.currentControllerPos.y - this.previousControllerPos.y;
           const sensitivity = 300;
-
-          let rot  = this.el.getAttribute('rotation');
-
-          let nextX = Math.max(-30, Math.min(30, rot.x + (deltaY * sensitivity)));
-
-          let nextY = Math.max(-30, Math.min(30, rot.y - (deltaX * sensitivity)));
-
+          const rot         = this.el.getAttribute('rotation');
+          const nextX       = Math.max(-30, Math.min(30, rot.x + deltaY * sensitivity));
+          const nextY       = Math.max(-30, Math.min(30, rot.y - deltaX * sensitivity));
           this.el.setAttribute('rotation', { x: nextX, y: nextY, z: 0 });
-
           this.previousControllerPos.copy(this.currentControllerPos);
-
           const movement = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-
-          if (movement > 0.0001) {
-
-            this.triggerHaptic(Math.min(0.5, Math.max(0.1, movement * 500)), 20);
-
-          }
-
+          if (movement > 0.0001) { this.triggerHaptic(Math.min(0.5, Math.max(0.1, movement * 500)), 20); }
         }
-
       });
-
 
       AFRAME.registerComponent('haptic-button', {
-
         init: function () {
-
           this.el.addEventListener('mousedown', (evt) => {
-
             const controller = evt.detail.cursorEl;
-
             if (controller && controller.components['tracked-controls']) {
-
               const gamepad = controller.components['tracked-controls'].controller.gamepad;
-
               if (gamepad && gamepad.hapticActuators.length > 0) {
-
                 gamepad.hapticActuators[0].pulse(0.4, 30);
-
               }
-
             }
-
           });
-
         }
-
       });
 
-
-      /**
-       * COMPONENT: PAGE CURL
-       * --------------------
-       * Rolling-cylinder vertex deformation page curl.
+      /*
+       * PAGE CURL — FULL REALISM
+       * ════════════════════════════════════════════════════════════════════
        *
-       * ── VR input ─────────────────────────────────────────────────────────
-       * A button (right controller) → right-side curl → forward (+1).
-       * X button (left  controller) → left-side  curl → backward (-1).
-       * Hold A/X and move controller left/right to peel.
-       * Release at >= 50% → completeCurl → doSwap + sound.
-       * Release at  < 50% → snapBack → no swap.
+       * Geometry
+       *   60×40 vertex grid (was 50×1) — enables full 2-D paper deformation.
        *
-       * ── Desktop curl drag ────────────────────────────────────────────────
-       * Left-click on the bottom-right corner zone then drag LEFT  = forward.
-       * Left-click on the bottom-left  corner zone then drag RIGHT = backward.
-       * Release at >= 50% → complete. Release at < 50% → snap back.
-       * startMouseX is captured from the live _mouseX tracker (a permanent
-       * window mousemove listener) because A-Frame cursor events do not carry
-       * native clientX. _onMouseMoveCurl and _onMouseUpCurl are added to
-       * window when a desktop curl begins and cleaned up on remove().
+       * Physics model
+       *   Diagonal fold line  — bottom corner leads top by up to 9 cm;
+       *                         exactly how real parchment peels from a corner.
+       *   Variable radius     — 60 % of R at bottom, 100 % at top;
+       *                         produces the tight conical curl of lifted paper.
+       *   Smooth blend zone   — arc → mirrored-flat landing via smoothstep;
+       *                         no vertex pop at the fold-over point.
+       *   Gravity droop       — free top edge sags 0-3 cm during mid-turn,
+       *                         maximum at 50 % progress, zero at 0 % and 100 %.
        *
-       * ── Multi-folio support ───────────────────────────────────────────────
-       * Reads scene.pages for destination texture. Calls scene.doSwap(dir).
+       * Visual layers
+       *   Front-face mesh     — carries the current-page texture.
+       *   Back-face mesh      — THREE.BackSide + warm parchment tint; visible
+       *                         as the page tips past vertical showing the verso.
+       *   Drop-shadow quad    — semi-transparent black plane tracks the swept
+       *                         area; bell-curve opacity peaking at 50 % turn.
        *
-       * ── Freeze prevention (two-layer defence) ────────────────────────────
-       * LAYER 1 — Gamepad polling in tick().
-       * LAYER 2 — Watchdog setTimeout (3500 ms).
+       * Animation
+       *   completeCurl        — cubic ease-in-out, 450 ms.
+       *   snapBack            — ease-out quadratic, 350 ms.
        *
-       * ── Isolation guarantees ─────────────────────────────────────────────
-       * Trigger: 100% dedicated to vr-grab-rotate. Curl uses A/X or left-click.
-       * Left-click on folio BODY does NOT tilt (drag-rotate uses right-click).
-       * Opacity: Three.js direct — A-Frame material src untouched, SWAP works.
+       * VR page-swap fix
+       *   A / X button release always commits the turn (no 50 % drag needed).
+       *   doSwap injects the Three.js texture directly (bypasses A-Frame's
+       *   async material update which can miss one frame inside WebXR).
+       *   Sensitivity raised to 3.0 m⁻¹ for comfortable VR peeling.
        */
-
       AFRAME.registerComponent('page-curl', {
 
         init: function () {
-
           const folio = this.el;
           const scene = folio.sceneEl;
-
-          // ── State ─────────────────────────────────────────────────────────
 
           this.isCurling        = false;
           this.curlSide         = null;
@@ -378,22 +187,16 @@
           this.R                = 0.04;
           this._animAborted     = false;
           this._watchdog        = null;
-
-          // Track native mouse X continuously so we can read it on the
-          // A-Frame cursor mousedown (which doesn't carry clientX).
-          this._mouseX = 0;
+          this._mouseX          = 0;
 
           this._trackMouse = (e) => { this._mouseX = e.clientX; };
-
           window.addEventListener('mousemove', this._trackMouse);
-
 
           scene.addEventListener('enter-vr', () => {
             this.isVR = true;
             this.rightCorner.classList.remove('clickable');
             this.leftCorner.classList.remove('clickable');
           });
-
           scene.addEventListener('exit-vr', () => {
             this.isVR = false;
             if (this.isCurling) { this.resetCurl(); }
@@ -401,38 +204,47 @@
             this.leftCorner.classList.add('clickable');
           });
 
-
-          // ── Curl mesh ─────────────────────────────────────────────────────
-
-          this.curlGeo = new THREE.PlaneGeometry(1.1, 0.8, 50, 1);
-
+          // ── 60×40 vertex grid ─────────────────────────────────────────
+          this.curlGeo = new THREE.PlaneGeometry(1.1, 0.8, 60, 40);
           const posAttr = this.curlGeo.attributes.position;
           const vCount  = posAttr.count;
-
           this.origX = new Float32Array(vCount);
           this.origY = new Float32Array(vCount);
-
           for (let i = 0; i < vCount; i++) {
             this.origX[i] = posAttr.getX(i);
             this.origY[i] = posAttr.getY(i);
           }
 
+          // Front-face curl (current-page texture)
           this.curlMat = new THREE.MeshStandardMaterial({
-            side:        THREE.DoubleSide,
-            roughness:   0.8,
-            metalness:   0.1,
-            transparent: false
+            side: THREE.FrontSide, roughness: 0.8, metalness: 0.1, transparent: false
           });
-
-          this.curlMesh            = new THREE.Mesh(this.curlGeo, this.curlMat);
+          this.curlMesh          = new THREE.Mesh(this.curlGeo, this.curlMat);
           this.curlMesh.position.z = 0.001;
           this.curlMesh.visible    = false;
-
           folio.object3D.add(this.curlMesh);
 
+          // Back-face curl — warm parchment tint, visible past vertical
+          this.backCurlMat = new THREE.MeshStandardMaterial({
+            side: THREE.BackSide, roughness: 0.85, metalness: 0.05,
+            color: new THREE.Color(0.88, 0.82, 0.68), transparent: false
+          });
+          this.backCurlMesh          = new THREE.Mesh(this.curlGeo, this.backCurlMat);
+          this.backCurlMesh.position.z = 0.001;
+          this.backCurlMesh.visible    = false;
+          folio.object3D.add(this.backCurlMesh);
 
-          // ── Back page ─────────────────────────────────────────────────────
+          // Drop-shadow quad
+          const shadowGeo = new THREE.PlaneGeometry(1.1, 0.8);
+          this.shadowMat  = new THREE.MeshBasicMaterial({
+            color: 0x000000, transparent: true, opacity: 0, depthWrite: false
+          });
+          this.shadowMesh          = new THREE.Mesh(shadowGeo, this.shadowMat);
+          this.shadowMesh.position.z = 0.0025;
+          this.shadowMesh.visible    = false;
+          folio.object3D.add(this.shadowMesh);
 
+          // Back page (destination texture)
           this.backPage = document.createElement('a-plane');
           this.backPage.setAttribute('width',    '1.1');
           this.backPage.setAttribute('height',   '0.8');
@@ -442,9 +254,7 @@
           this.backPage.setAttribute('visible', 'false');
           folio.appendChild(this.backPage);
 
-
-          // ── Corner zones ──────────────────────────────────────────────────
-
+          // Corner hit-zones
           this.rightCorner = document.createElement('a-plane');
           this.rightCorner.setAttribute('position', '0.4 -0.3 0.01');
           this.rightCorner.setAttribute('width',    '0.25');
@@ -461,38 +271,30 @@
           this.leftCorner.classList.add('clickable');
           folio.appendChild(this.leftCorner);
 
-
-          // ── Page-turn sound ───────────────────────────────────────────────
-
           const playPageTurn = () => {
             const audio = document.querySelector('#pageturn-track');
             if (audio) { audio.currentTime = 0; audio.play().catch(() => {}); }
           };
 
+          // Easing functions
+          const easeInOut = (t) => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
+          const easeOut   = (t) => 1 - (1-t)*(1-t);
 
-          // ── completeCurl ──────────────────────────────────────────────────
-
+          // completeCurl: cubic ease-in-out, 450 ms
           this._completeCurl = () => {
-
             playPageTurn();
-
             this.activeController = null;
-
             const startProg    = this.peelProgress;
             const capturedSide = this.curlSide;
             const startTime    = performance.now();
-            const duration     = 300;
-
+            const duration     = 450;
             const animate = (now) => {
               if (this._animAborted) return;
-
-              const t     = Math.min((now - startTime) / duration, 1);
-              const eased = t * (2 - t);
-
+              const raw   = Math.min((now - startTime) / duration, 1);
+              const eased = easeInOut(raw);
               this.peelProgress = startProg + (1 - startProg) * eased;
               this.updateCurl(this.peelProgress, capturedSide);
-
-              if (t < 1) {
+              if (raw < 1) {
                 requestAnimationFrame(animate);
               } else {
                 setTimeout(() => {
@@ -503,51 +305,34 @@
                 }, 50);
               }
             };
-
             requestAnimationFrame(animate);
           };
 
-
-          // ── snapBack ──────────────────────────────────────────────────────
-
+          // snapBack: ease-out, 350 ms
           this._snapBack = () => {
-
             this.activeController = null;
-
             const startProg    = this.peelProgress;
             const capturedSide = this.curlSide;
             const startTime    = performance.now();
-            const duration     = 250;
-
+            const duration     = 350;
             const animate = (now) => {
               if (this._animAborted) return;
-
-              const t     = Math.min((now - startTime) / duration, 1);
-              const eased = t * (2 - t);
-
+              const raw   = Math.min((now - startTime) / duration, 1);
+              const eased = easeOut(raw);
               this.peelProgress = startProg * (1 - eased);
               this.updateCurl(this.peelProgress, capturedSide);
-
-              if (t < 1) {
+              if (raw < 1) {
                 requestAnimationFrame(animate);
               } else {
-                setTimeout(() => {
-                  if (this._animAborted) return;
-                  this.resetCurl();
-                }, 50);
+                setTimeout(() => { if (!this._animAborted) this.resetCurl(); }, 50);
               }
             };
-
             requestAnimationFrame(animate);
           };
 
-
-          // ── startCurl ─────────────────────────────────────────────────────
-
+          // startCurl
           const startCurl = (side, controllerEl) => {
-
             if (this.isCurling) return;
-
             const pages      = scene.pages;
             const currentIdx = (scene.currentAudioPage || 1) - 1;
             const dir        = side === 'right' ? 1 : -1;
@@ -556,110 +341,80 @@
             const folioMesh = folio.getObject3D('mesh');
             if (folioMesh && folioMesh.material) {
               if (folioMesh.material.map) {
-                this.curlMat.map            = folioMesh.material.map;
-                this.curlMat.map.minFilter  = THREE.LinearFilter;
-                this.curlMat.map.anisotropy = Math.min(16,
-                  folio.sceneEl.renderer
-                    ? folio.sceneEl.renderer.capabilities.getMaxAnisotropy()
-                    : 16
-                );
+                this.curlMat.map             = folioMesh.material.map;
+                this.curlMat.map.minFilter   = THREE.LinearFilter;
+                this.curlMat.map.anisotropy  = Math.min(16,
+                  folio.sceneEl.renderer ? folio.sceneEl.renderer.capabilities.getMaxAnisotropy() : 16);
                 this.curlMat.map.needsUpdate = true;
                 this.curlMat.needsUpdate     = true;
               }
-              this.curlMat.metalness = folioMesh.material.metalness;
-              this.curlMat.roughness = folioMesh.material.roughness;
-            }
-
-            this.backPage.setAttribute('src', pages[nextIdx].src);
-            this.backPage.setAttribute('visible', 'true');
-
-            if (folioMesh && folioMesh.material) {
+              this.curlMat.metalness     = folioMesh.material.metalness;
+              this.curlMat.roughness     = folioMesh.material.roughness;
+              this.backCurlMat.metalness = folioMesh.material.metalness;
+              this.backCurlMat.roughness = folioMesh.material.roughness;
               folioMesh.material.transparent = true;
               folioMesh.material.opacity     = 0;
               folioMesh.material.needsUpdate = true;
             }
 
-            this.curlMesh.visible = true;
-            this._animAborted     = false;
-
-            this.isCurling        = true;
-            this.curlSide         = side;
-            this.peelProgress     = 0;
-            this.activeController = controllerEl || null;
+            this.backPage.setAttribute('src', pages[nextIdx].src);
+            this.backPage.setAttribute('visible', 'true');
+            this.curlMesh.visible     = true;
+            this.backCurlMesh.visible = true;
+            this.shadowMesh.visible   = true;
+            this._animAborted         = false;
+            this.isCurling            = true;
+            this.curlSide             = side;
+            this.peelProgress         = 0;
+            this.activeController     = controllerEl || null;
 
             if (this.activeController) {
-              // VR: record controller world X as start reference.
               this.activeController.object3D.getWorldPosition(this._ctrlPos);
               this.startX = this._ctrlPos.x;
             } else {
-              // Desktop: record current mouse X as start reference.
               this.startMouseX = this._mouseX;
             }
 
             this.updateCurl(0, side);
-
-            this._watchdog = setTimeout(() => {
-              if (this.isCurling) { this.resetCurl(); }
-            }, 3500);
+            this._watchdog = setTimeout(() => { if (this.isCurling) { this.resetCurl(); } }, 3500);
           };
 
-
-          // ── Desktop mouse handlers for curl drag ──────────────────────────
-          // _onMouseMoveCurl and _onMouseUpCurl are stored so they can be
-          // removed in the component's remove() lifecycle hook.
-
+          // Desktop mouse handlers
           this._onMouseMoveCurl = (e) => {
             if (!this.isCurling || this.isVR) return;
-
             const dx          = this.startMouseX - e.clientX;
-            // 40% of viewport width = full page turn.
             const sensitivity = 1 / (window.innerWidth * 0.4);
-
             let newProgress;
             if (this.curlSide === 'right') {
-              // Drag left (negative clientX delta → positive dx) = forward peel.
               newProgress = Math.max(0, Math.min(1,  dx * sensitivity));
             } else {
-              // Drag right (positive clientX delta → negative dx) = backward peel.
               newProgress = Math.max(0, Math.min(1, -dx * sensitivity));
             }
-
             this.peelProgress = newProgress;
             this.updateCurl(this.peelProgress, this.curlSide);
           };
-
           this._onMouseUpCurl = () => {
             if (!this.isCurling || this.isVR) return;
-            if (this.peelProgress >= 0.5) {
-              this._completeCurl();
-            } else {
-              this._snapBack();
-            }
+            if (this.peelProgress >= 0.5) { this._completeCurl(); } else { this._snapBack(); }
           };
-
           window.addEventListener('mousemove', this._onMouseMoveCurl);
           window.addEventListener('mouseup',   this._onMouseUpCurl);
 
-
-          // ── Corner mousedown handlers ─────────────────────────────────────
-
+          // Corner click handlers
           this.rightCorner.addEventListener('mousedown', (evt) => {
             evt.stopPropagation();
-            if (this.isVR) return; // VR handled by abuttondown below
+            if (this.isVR) return;
             startCurl('right', null);
           });
-
           this.leftCorner.addEventListener('mousedown', (evt) => {
             evt.stopPropagation();
             if (this.isVR) return;
             startCurl('left', null);
           });
 
-
-          // ── VR A/X button handlers ────────────────────────────────────────
-
+          // VR A/X button handlers
+          // FIX: Release always commits — no 50% drag threshold.
           scene.addEventListener('loaded', () => {
-
             const rightCtrl = document.querySelector('[laser-controls="hand: right"]');
             const leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
 
@@ -669,104 +424,128 @@
             };
 
             if (rightCtrl) {
-
               rightCtrl.addEventListener('abuttondown', () => {
                 if (!this.isVR || this.isCurling) return;
-                if (isHotspotTargeted())           return;
+                if (isHotspotTargeted()) return;
                 startCurl('right', rightCtrl);
               });
-
               rightCtrl.addEventListener('abuttonup', () => {
-                if (!this.isCurling || !this.isVR) return;
-                if (!this.activeController)        return;
-                if (this.peelProgress >= 0.5) {
-                  this._completeCurl();
-                } else {
-                  this._snapBack();
-                }
+                if (!this.isCurling || !this.isVR || !this.activeController) return;
+                this._completeCurl();   // VR FIX: always complete
               });
-
             }
-
             if (leftCtrl) {
-
               leftCtrl.addEventListener('xbuttondown', () => {
                 if (!this.isVR || this.isCurling) return;
-                if (isHotspotTargeted())           return;
+                if (isHotspotTargeted()) return;
                 startCurl('left', leftCtrl);
               });
-
               leftCtrl.addEventListener('xbuttonup', () => {
-                if (!this.isCurling || !this.isVR) return;
-                if (!this.activeController)        return;
-                if (this.peelProgress >= 0.5) {
-                  this._completeCurl();
-                } else {
-                  this._snapBack();
-                }
+                if (!this.isCurling || !this.isVR || !this.activeController) return;
+                this._completeCurl();   // VR FIX: always complete
               });
-
             }
-
           });
-
         },
 
-
+        // ── updateCurl ───────────────────────────────────────────────────────
+        // Full 2-D tapered-cylinder model:
+        //   • Diagonal fold line (bottom corner leads top by up to 9 cm)
+        //   • Variable cylinder radius (60–100 % from bottom to top)
+        //   • Gravity droop on the free edge (sine-bell peaking at 50 % turn)
+        //   • Smooth smoothstep blend from arc peak into mirrored-flat landing
+        //   • Drop shadow tracks swept area with bell-curve opacity
         updateCurl: function (peelProgress, side) {
-
-          const R       = this.R;
-          const piR     = Math.PI * R;
+          const R_base  = this.R;
           const posAttr = this.curlGeo.attributes.position;
 
-          const peelX = side === 'right'
+          const basePeelX = side === 'right'
             ?  0.55 - peelProgress * 1.1
             : -0.55 + peelProgress * 1.1;
 
           for (let i = 0; i < posAttr.count; i++) {
-
             const x0 = this.origX[i];
             const y0 = this.origY[i];
-            let x, z;
+            const yN = (y0 + 0.4) / 0.8;   // 0=bottom, 1=top
 
-            if (side === 'right') {
-              const d = x0 - peelX;
-              if      (d <= 0)   { x = x0; z = 0; }
-              else if (d <= piR) { const a = d / R; x = peelX + R * Math.sin(a); z = R * (1 - Math.cos(a)); }
-              else               { x = x0; z = -0.002; }
+            // Diagonal fold: bottom corner leads top
+            const diagOffset = 0.09 * peelProgress * (1.0 - yN);
+            const localPeelX = side === 'right'
+              ? basePeelX - diagOffset
+              : basePeelX + diagOffset;
+
+            // Variable radius: tighter curl at bottom
+            const R   = R_base * (0.60 + 0.40 * yN);
+            const piR = Math.PI * R;
+            const bW  = piR * 0.10;   // smoothstep blend width
+
+            const d = side === 'right' ? x0 - localPeelX : localPeelX - x0;
+
+            let nx, ny, nz;
+
+            if (d <= 0) {
+              // Flat — not yet peeled
+              nx = x0; ny = y0; nz = 0;
+
+            } else if (d <= piR) {
+              // Rolling-cylinder arc
+              const a = d / R;
+              nx = side === 'right'
+                ? localPeelX + R * Math.sin(a)
+                : localPeelX - R * Math.sin(a);
+              nz = R * (1.0 - Math.cos(a));
+
+              // Gravity droop: top edge sags under its own weight
+              const liftFrac = nz / (2.0 * R);
+              const sagPeak  = Math.sin(peelProgress * Math.PI) * 0.03;
+              ny = y0 - liftFrac * sagPeak * yN;
+
+            } else if (d <= piR + bW) {
+              // Smooth arc→flat blend via smoothstep
+              const t     = (d - piR) / bW;
+              const blend = t * t * (3.0 - 2.0 * t);
+              const flatNx = 2.0 * localPeelX - x0;
+              nx = localPeelX + (flatNx - localPeelX) * blend;
+              nz = 2.0 * R * (1.0 - blend) + (-0.002) * blend;
+              ny = y0;
+
             } else {
-              const d = peelX - x0;
-              if      (d <= 0)   { x = x0; z = 0; }
-              else if (d <= piR) { const a = d / R; x = peelX - R * Math.sin(a); z = R * (1 - Math.cos(a)); }
-              else               { x = x0; z = -0.002; }
+              // Swept over — reflected flat on back side
+              nx = 2.0 * localPeelX - x0;
+              ny = y0;
+              nz = -0.002;
             }
 
-            posAttr.setXYZ(i, x, y0, z);
-
+            posAttr.setXYZ(i, nx, ny, nz);
           }
 
           posAttr.needsUpdate = true;
           this.curlGeo.computeVertexNormals();
 
+          // Drop shadow: bell-curve opacity, covers swept area
+          this.shadowMat.opacity     = Math.sin(peelProgress * Math.PI) * 0.45;
+          this.shadowMesh.visible    = peelProgress > 0.005;
+          const sweepW               = peelProgress * 1.1;
+          const sweepCx              = side === 'right' ?  0.55 - sweepW * 0.5 : -0.55 + sweepW * 0.5;
+          this.shadowMesh.scale.x    = Math.max(0.001, sweepW / 1.1);
+          this.shadowMesh.position.x = sweepCx;
         },
 
-
         resetCurl: function () {
-
           clearTimeout(this._watchdog);
           this._watchdog    = null;
           this._animAborted = true;
 
-          const folio     = this.el;
-          const folioMesh = folio.getObject3D('mesh');
-
+          const folioMesh = this.el.getObject3D('mesh');
           if (folioMesh && folioMesh.material) {
             folioMesh.material.opacity     = 1;
             folioMesh.material.transparent = false;
             folioMesh.material.needsUpdate = true;
           }
 
-          this.curlMesh.visible = false;
+          this.curlMesh.visible     = false;
+          this.backCurlMesh.visible = false;
+          this.shadowMesh.visible   = false;
           this.backPage.setAttribute('visible', 'false');
 
           const posAttr = this.curlGeo.attributes.position;
@@ -775,949 +554,445 @@
           }
           posAttr.needsUpdate = true;
 
-          this.isCurling        = false;
-          this.curlSide         = null;
-          this.activeController = null;
-          this.peelProgress     = 0;
-
+          this.isCurling         = false;
+          this.curlSide          = null;
+          this.activeController  = null;
+          this.peelProgress      = 0;
+          this.shadowMat.opacity = 0;
+          this.shadowMesh.scale.x    = 1;
+          this.shadowMesh.position.x = 0;
         },
 
-
+        // VR tick: polls gamepad so button-release detection survives WebXR
+        // event gaps. Release always commits. Sensitivity = 3.0 m⁻¹.
         tick: function () {
-
-          // VR only: gamepad polling (Layer 1 freeze prevention).
           if (!this.isCurling || !this.isVR || !this.activeController) return;
-
           const tc = this.activeController.components &&
                      this.activeController.components['tracked-controls'];
-
-          if (tc && tc.controller && tc.controller.gamepad) {
-
-            const gp  = tc.controller.gamepad;
-            const btn = gp.buttons[4];
-
-            if (btn && !btn.pressed) {
-              this.activeController = null;
-              if (this.peelProgress >= 0.5) {
-                this._completeCurl();
-              } else {
-                this._snapBack();
-              }
-              return;
-            }
-
+          if (!tc || !tc.controller || !tc.controller.gamepad) return;
+          const gp  = tc.controller.gamepad;
+          const btn = gp.buttons[4];
+          if (btn && !btn.pressed) {
+            this.activeController = null;
+            this._completeCurl();   // VR FIX: always complete on release
+            return;
           }
-
           this.activeController.object3D.getWorldPosition(this._ctrlPos);
-
           const deltaX      = this._ctrlPos.x - this.startX;
-          const sensitivity = 2.0;
-          let   newProgress;
-
+          const sensitivity = 3.0;
+          let newProgress;
           if (this.curlSide === 'right') {
             newProgress = Math.max(0, Math.min(1, -deltaX * sensitivity));
           } else {
             newProgress = Math.max(0, Math.min(1,  deltaX * sensitivity));
           }
-
           this.peelProgress = newProgress;
           this.updateCurl(this.peelProgress, this.curlSide);
-
         },
 
-
         remove: function () {
-
-          // Clean up all window-level listeners added by this component.
           window.removeEventListener('mousemove', this._trackMouse);
           window.removeEventListener('mousemove', this._onMouseMoveCurl);
           window.removeEventListener('mouseup',   this._onMouseUpCurl);
-
         }
-
       });
 
-
-      /**
-       * COMPONENT: DESKTOP DRAG ROTATE
-       * --------------------------------
-       * RIGHT-click drag to tilt the folio on desktop.
-       * Left-click is reserved for curl drag and hotspot activation.
-       *
-       * Uses native window events (not A-Frame cursor events) to detect
-       * button identity. Context menu is suppressed while over the canvas
-       * so right-click drag feels natural.
-       *
-       * Completely inactive in VR (vr-grab-rotate handles tilt there).
-       */
-
       AFRAME.registerComponent('drag-rotate', {
-
         init: function () {
-
           this.ifMouseDown = false;
-
-          this.isVR = false;
-
+          this.isVR        = false;
           this.el.sceneEl.addEventListener('enter-vr', () => { this.isVR = true;  });
-
           this.el.sceneEl.addEventListener('exit-vr',  () => { this.isVR = false; });
-
-
-          // Native window events so we can check e.button.
-          this.onMouseDown = (e) => {
-            // button 2 = right mouse button.
-            if (!this.isVR && e.button === 2) this.ifMouseDown = true;
-          };
-
-          this.onMouseUp = () => { this.ifMouseDown = false; };
-
-          this.onMouseMove = (e) => {
+          this.onMouseDown   = (e) => { if (!this.isVR && e.button === 2) this.ifMouseDown = true; };
+          this.onMouseUp     = ()  => { this.ifMouseDown = false; };
+          this.onMouseMove   = (e) => {
             if (!this.ifMouseDown) return;
-            let rotation = this.el.getAttribute('rotation');
-            let deltaX   = (e.movementX !== undefined ? e.movementX : 0) * 0.15;
-            let deltaY   = (e.movementY !== undefined ? e.movementY : 0) * 0.15;
-            let nextX    = Math.max(-30, Math.min(30, rotation.x + deltaY));
-            let nextY    = Math.max(-30, Math.min(30, rotation.y + deltaX));
-            this.el.setAttribute('rotation', { x: nextX, y: nextY, z: 0 });
+            const rotation = this.el.getAttribute('rotation');
+            const deltaX   = (e.movementX !== undefined ? e.movementX : 0) * 0.15;
+            const deltaY   = (e.movementY !== undefined ? e.movementY : 0) * 0.15;
+            this.el.setAttribute('rotation', {
+              x: Math.max(-30, Math.min(30, rotation.x + deltaY)),
+              y: Math.max(-30, Math.min(30, rotation.y + deltaX)),
+              z: 0
+            });
           };
-
-          // Prevent the browser context menu during right-click drag.
           this.onContextMenu = (e) => e.preventDefault();
-
-
           window.addEventListener('mousedown',   this.onMouseDown);
           window.addEventListener('mouseup',     this.onMouseUp);
           window.addEventListener('mousemove',   this.onMouseMove);
           window.addEventListener('contextmenu', this.onContextMenu);
-
         },
-
         remove: function () {
-
           window.removeEventListener('mousedown',   this.onMouseDown);
           window.removeEventListener('mouseup',     this.onMouseUp);
           window.removeEventListener('mousemove',   this.onMouseMove);
           window.removeEventListener('contextmenu', this.onContextMenu);
-
         }
-
       });
-
-
-      /**
-       * COMPONENT: CANDLE FLICKER — ENHANCED
-       * Option 1: Position micro-drift.
-       * Option 2: Organic intensity curve.
-       * Option 3: Colour temperature variation.
-       */
 
       AFRAME.registerComponent('flicker', {
-
         init: function () {
-
-          const initPos = this.el.getAttribute('position');
-
-          this.baseX = initPos ? initPos.x : 0;
-
-          this.baseY = initPos ? initPos.y : 0.5;
-
-          this.baseZ = initPos ? initPos.z : 0.5;
-
-          this.phaseX = Math.random() * Math.PI * 2;
-
-          this.phaseY = Math.random() * Math.PI * 2;
-
+          const p      = this.el.getAttribute('position');
+          this.baseX   = p ? p.x : 0;
+          this.baseY   = p ? p.y : 0.5;
+          this.baseZ   = p ? p.z : 0.5;
+          this.phaseX  = Math.random() * Math.PI * 2;
+          this.phaseY  = Math.random() * Math.PI * 2;
           this.lastLightUpdate = 0;
-
         },
-
-
         tick: function (t) {
-
-          const driftX = Math.sin(t * 0.0007 + this.phaseX) * 0.015
-
-                       + Math.sin(t * 0.0019 + this.phaseX) * 0.008
-
-                       + (Math.random() - 0.5) * 0.004;
-
-
-          const driftY = Math.sin(t * 0.0005 + this.phaseY) * 0.012
-
-                       + Math.sin(t * 0.0023 + this.phaseY) * 0.006
-
-                       + (Math.random() - 0.5) * 0.003;
-
-
-          this.el.object3D.position.set(
-
-            this.baseX + driftX,
-
-            this.baseY + driftY,
-
-            this.baseZ
-
-          );
-
-
+          const driftX = Math.sin(t*0.0007+this.phaseX)*0.015 + Math.sin(t*0.0019+this.phaseX)*0.008 + (Math.random()-0.5)*0.004;
+          const driftY = Math.sin(t*0.0005+this.phaseY)*0.012 + Math.sin(t*0.0023+this.phaseY)*0.006 + (Math.random()-0.5)*0.003;
+          this.el.object3D.position.set(this.baseX+driftX, this.baseY+driftY, this.baseZ);
           if (t - this.lastLightUpdate > 50) {
-
             this.lastLightUpdate = t;
-
-            const slowBreath  = Math.sin(t * 0.00035) * 0.25 + 0.25;
-
-            const fastFlutter = Math.sin(t * 0.0023)  * 0.10;
-
-            const noise       = (Math.random() - 0.5) * 0.15;
-
-            const intensity   = Math.max(0.9, Math.min(1.8,
-
-              1.2 + slowBreath + fastFlutter + noise
-
-            ));
-
-            const t_col = (intensity - 0.9) / 0.9;
-
-            const g = Math.round(119 + t_col * 119);
-
-            const b = Math.round(51  + t_col * 85);
-
+            const intensity = Math.max(0.9, Math.min(1.8,
+              1.2 + Math.sin(t*0.00035)*0.25+0.25 + Math.sin(t*0.0023)*0.10 + (Math.random()-0.5)*0.15));
+            const t_col = (intensity-0.9)/0.9;
             this.el.setAttribute('light', {
-
               intensity: intensity,
-
-              color: 'rgb(255,' + g + ',' + b + ')'
-
+              color: 'rgb(255,'+Math.round(119+t_col*119)+','+Math.round(51+t_col*85)+')'
             });
-
           }
-
         }
-
       });
-
-
-      /**
-       * COMPONENT: FOLIO HOTSPOTS
-       * -------------------------
-       * Tick-based raycaster approach — no zone planes, no visual indicators.
-       *
-       * VR:      A/X buttons toggle the targeted panel.
-       * Desktop: Left-click on the folio toggles the targeted panel.
-       *          tick() checks the desktop #cursor raycaster so targetedPanel
-       *          is updated correctly without any VR controller present.
-       */
 
       AFRAME.registerComponent('folio-hotspots', {
-
         init: function () {
-
-          const folio = this.el;
-
+          const folio         = this.el;
           this.targetedPanel  = null;
-
           this.zones          = [];
-
           this._localPt       = new THREE.Vector3();
-
           this.rightCtrl      = null;
-
           this.leftCtrl       = null;
-
           this.desktopCursor  = null;
-
           this.isVR           = false;
-
-          const scene = this.el.sceneEl;
-
+          const scene         = this.el.sceneEl;
           scene.addEventListener('enter-vr', () => { this.isVR = true;  });
-
           scene.addEventListener('exit-vr',  () => { this.isVR = false; });
 
-
           const makeHotspot = (cx, cy, panelPos, labelText) => {
-
             const panel = document.createElement('a-entity');
-
             panel.setAttribute('position', panelPos);
-
             panel.setAttribute('visible', 'false');
-
-
             const bg = document.createElement('a-plane');
-
-            bg.setAttribute('width', '0.36');
-
-            bg.setAttribute('height', '0.18');
-
+            bg.setAttribute('width', '0.36'); bg.setAttribute('height', '0.18');
             bg.setAttribute('material', 'color: #1a1a2e; opacity: 0.92; side: double');
-
             panel.appendChild(bg);
-
-
             const txt = document.createElement('a-text');
-
-            txt.setAttribute('value', labelText);
-
-            txt.setAttribute('color', '#FFD700');
-
-            txt.setAttribute('align', 'center');
-
-            txt.setAttribute('width', '0.32');
-
+            txt.setAttribute('value', labelText); txt.setAttribute('color', '#FFD700');
+            txt.setAttribute('align', 'center'); txt.setAttribute('width', '0.32');
             txt.setAttribute('position', '0 0 0.01');
-
             panel.appendChild(txt);
-
             folio.appendChild(panel);
-
-
-            this.zones.push({
-
-              cx:        cx,
-
-              cy:        cy,
-
-              halfW:     0.125,
-
-              halfH:     0.10,
-
-              panel:     panel,
-
-              panelOpen: false
-
-            });
-
+            this.zones.push({ cx, cy, halfW: 0.125, halfH: 0.10, panel, panelOpen: false });
           };
-
 
           makeHotspot( 0.24, -0.02,  '0.24 0.17 0.06', 'Info. test one');
-
           makeHotspot(-0.24, -0.02, '-0.24 0.17 0.06', 'Info. test two');
 
-
           const toggle = () => {
-
             if (!this.targetedPanel) return;
-
             const zone = this.zones.find(z => z.panel === this.targetedPanel);
-
             if (!zone) return;
-
             zone.panelOpen = !zone.panelOpen;
-
             zone.panel.setAttribute('visible', zone.panelOpen);
-
           };
 
-
-          // Desktop: left-click on the folio body triggers toggle.
-          // toggle() checks targetedPanel first — so clicking with no hotspot
-          // aimed has no effect.
-          folio.addEventListener('click', () => {
-            if (!this.isVR) toggle();
-          });
-
-
+          folio.addEventListener('click', () => { if (!this.isVR) toggle(); });
           scene.addEventListener('loaded', () => {
-
-            this.rightCtrl    = document.querySelector('[laser-controls="hand: right"]');
-
-            this.leftCtrl     = document.querySelector('[laser-controls="hand: left"]');
-
+            this.rightCtrl     = document.querySelector('[laser-controls="hand: right"]');
+            this.leftCtrl      = document.querySelector('[laser-controls="hand: left"]');
             this.desktopCursor = document.querySelector('#cursor');
-
             if (this.rightCtrl) this.rightCtrl.addEventListener('abuttondown', toggle);
-
             if (this.leftCtrl)  this.leftCtrl.addEventListener('xbuttondown',  toggle);
-
           });
-
         },
-
-
         tick: function () {
-
           const folio    = this.el;
-
           let hitZoneIdx = -1;
-
-
-          // ── Check VR controllers ──────────────────────────────────────────
-
-          const ctrls = [this.rightCtrl, this.leftCtrl];
-
+          const ctrls    = [this.rightCtrl, this.leftCtrl];
           for (let c = 0; c < ctrls.length; c++) {
-
-            const ctrl = ctrls[c];
-
-            if (!ctrl) continue;
-
-            const rc = ctrl.components && ctrl.components.raycaster;
-
+            const ctrl = ctrls[c]; if (!ctrl) continue;
+            const rc   = ctrl.components && ctrl.components.raycaster;
             if (!rc || !rc.intersectedEls) continue;
-
             const idx = rc.intersectedEls.indexOf(folio);
-
             if (idx < 0 || !rc.intersections[idx]) continue;
-
             this._localPt.copy(rc.intersections[idx].point);
-
             folio.object3D.worldToLocal(this._localPt);
-
             for (let i = 0; i < this.zones.length; i++) {
-
               const z = this.zones[i];
-
-              if (Math.abs(this._localPt.x - z.cx) <= z.halfW &&
-                  Math.abs(this._localPt.y - z.cy) <= z.halfH) {
-
-                hitZoneIdx = i;
-                break;
-
+              if (Math.abs(this._localPt.x-z.cx) <= z.halfW && Math.abs(this._localPt.y-z.cy) <= z.halfH) {
+                hitZoneIdx = i; break;
               }
-
             }
-
             if (hitZoneIdx >= 0) break;
-
           }
-
-
-          // ── Check desktop cursor (only when VR controllers found nothing) ─
-
           if (hitZoneIdx < 0 && !this.isVR && this.desktopCursor) {
-
-            const rc = this.desktopCursor.components &&
-                       this.desktopCursor.components.raycaster;
-
+            const rc = this.desktopCursor.components && this.desktopCursor.components.raycaster;
             if (rc && rc.intersectedEls) {
-
               const idx = rc.intersectedEls.indexOf(folio);
-
               if (idx >= 0 && rc.intersections[idx]) {
-
                 this._localPt.copy(rc.intersections[idx].point);
-
                 folio.object3D.worldToLocal(this._localPt);
-
                 for (let i = 0; i < this.zones.length; i++) {
-
                   const z = this.zones[i];
-
-                  if (Math.abs(this._localPt.x - z.cx) <= z.halfW &&
-                      Math.abs(this._localPt.y - z.cy) <= z.halfH) {
-
-                    hitZoneIdx = i;
-                    break;
-
+                  if (Math.abs(this._localPt.x-z.cx) <= z.halfW && Math.abs(this._localPt.y-z.cy) <= z.halfH) {
+                    hitZoneIdx = i; break;
                   }
-
                 }
-
               }
-
             }
-
           }
-
-
           this.targetedPanel = hitZoneIdx >= 0 ? this.zones[hitZoneIdx].panel : null;
-
         }
-
       });
-
-
-      /**
-       * COMPONENT: PANEL AUDIO
-       * ----------------------
-       * Invisible clickable zone on each text panel.
-       * Hover: strong haptic (0.65, 80ms) in VR.
-       * A/X (VR): toggle audio for the current page.
-       *
-       * Schema:
-       *   type — 'latin' or 'english'. Reads from scene.pages[].latinSrc
-       *          or .englishSrc. Adding a new page requires only updating
-       *          the pages[] array in scriptorium-logic.
-       */
 
       AFRAME.registerComponent('panel-audio', {
-
-        schema: {
-
-          type: { type: 'string', default: 'latin' }
-
-        },
-
-
+        schema: { type: { type: 'string', default: 'latin' } },
         init: function () {
-
           const panel = this.el;
-
           const scene = this.el.sceneEl;
-
           let isTargeted = false;
-
-
           const zone = document.createElement('a-plane');
-
-          zone.setAttribute('width', '1.0');
-
-          zone.setAttribute('height', '1.2');
-
+          zone.setAttribute('width', '1.0'); zone.setAttribute('height', '1.2');
           zone.setAttribute('position', '0 -0.1 0.02');
-
           zone.setAttribute('material', 'opacity: 0; transparent: true; side: double');
-
           zone.classList.add('clickable');
-
           panel.appendChild(zone);
-
-
           const pulseHaptic = (evt) => {
-
-            const ctrl = evt && evt.detail && evt.detail.cursorEl;
-
-            if (!ctrl) return;
-
-            const tc = ctrl.components && ctrl.components['tracked-controls'];
-
-            if (!tc) return;
-
-            const gp = tc.controller && tc.controller.gamepad;
-
-            if (gp && gp.hapticActuators && gp.hapticActuators.length > 0) {
-
-              gp.hapticActuators[0].pulse(0.65, 80);
-
-            }
-
+            const ctrl = evt && evt.detail && evt.detail.cursorEl; if (!ctrl) return;
+            const tc   = ctrl.components && ctrl.components['tracked-controls']; if (!tc) return;
+            const gp   = tc.controller && tc.controller.gamepad;
+            if (gp && gp.hapticActuators && gp.hapticActuators.length > 0) gp.hapticActuators[0].pulse(0.65, 80);
           };
-
-
           zone.addEventListener('mouseenter', (evt) => { isTargeted = true;  pulseHaptic(evt); });
-
-          zone.addEventListener('mouseleave', ()    => { isTargeted = false; });
-
-
+          zone.addEventListener('mouseleave', ()     => { isTargeted = false; });
           const getAudio = () => {
-
-            const pages = scene.pages;
-
-            if (!pages) return null;
-
-            const idx   = (scene.currentAudioPage || 1) - 1;
-
-            const page  = pages[idx];
-
-            if (!page) return null;
-
+            const pages = scene.pages; if (!pages) return null;
+            const page  = pages[(scene.currentAudioPage||1)-1]; if (!page) return null;
             const srcId = this.data.type === 'latin' ? page.latinSrc : page.englishSrc;
-
             return srcId ? document.querySelector(srcId) : null;
-
           };
-
-
           const toggle = () => {
-
             if (!isTargeted) return;
-
-            const audio = getAudio();
-
-            if (!audio) return;
-
+            const audio = getAudio(); if (!audio) return;
             if (scene.currentPanelAudio && scene.currentPanelAudio !== audio) {
-
-              scene.currentPanelAudio.pause();
-
-              scene.currentPanelAudio.currentTime = 0;
-
+              scene.currentPanelAudio.pause(); scene.currentPanelAudio.currentTime = 0;
               scene.currentPanelAudio = null;
-
             }
-
-            if (audio.paused) {
-
-              audio.play();
-
-              scene.currentPanelAudio = audio;
-
-            } else {
-
-              audio.pause();
-
-              audio.currentTime = 0;
-
-              scene.currentPanelAudio = null;
-
-            }
-
+            if (audio.paused) { audio.play(); scene.currentPanelAudio = audio; }
+            else { audio.pause(); audio.currentTime = 0; scene.currentPanelAudio = null; }
           };
-
-
           scene.addEventListener('loaded', () => {
-
             const rightCtrl = document.querySelector('[laser-controls="hand: right"]');
-
             const leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
-
             if (rightCtrl) rightCtrl.addEventListener('abuttondown', toggle);
-
             if (leftCtrl)  leftCtrl.addEventListener('xbuttondown',  toggle);
-
           });
-
         }
-
       });
 
-
-      /**
-       * COMPONENT: SCRIPTORIUM LOGIC
-       * ----------------------------
-       * Central controller. Manages the pages array, page swaps,
-       * materiality, zoom, scale, and audio.
-       *
-       * ── Adding a new folio ────────────────────────────────────────────────
-       * 1. Add <img> and <audio> elements to <a-assets>.
-       * 2. Add a new entry to the pages[] array below.
-       * No other code changes are needed.
+      /*
+       * SCRIPTORIUM LOGIC
+       * VR swap fix: doSwap injects the Three.js texture directly (with a
+       * per-session cache) so the folio updates inside WebXR instantly —
+       * bypassing A-Frame's async setAttribute which can miss one frame.
        */
-
       AFRAME.registerComponent('scriptorium-logic', {
-
         init: function () {
-
           const folio        = document.querySelector('#folio-object');
-
           const zoomAnchor   = document.querySelector('#zoom-anchor');
-
           const infoPanel    = document.querySelector('#info-panel');
-
           const soundEl      = document.querySelector('#ambient-sound');
-
           const clickSoundEl = document.querySelector('#click-sound');
-
           const transcrText  = document.querySelector('#transcr-text');
-
           const translText   = document.querySelector('#transl-text');
-
           const muteBtn      = document.querySelector('#mute-button');
-
           const muteLabel    = document.querySelector('#mute-label');
-
           const hoverTooltip = document.querySelector('#hover-tooltip');
-
           const cursor       = document.querySelector('#cursor');
 
           this.el.addEventListener('enter-vr', () => cursor.setAttribute('visible', false));
-
           this.el.addEventListener('exit-vr',  () => cursor.setAttribute('visible', true));
 
-
           let zoomed          = false;
-
           let materialityMode = false;
-
           let currentPage     = 1;
-
           this.el.currentAudioPage = 1;
-
           let isMuted = false;
 
-
-          const playClick = () => {
-
-            if (clickSoundEl && clickSoundEl.components.sound) {
-
-              clickSoundEl.components.sound.stopSound();
-
-              clickSoundEl.components.sound.playSound();
-
-            }
-
+          // Three.js texture cache keyed by asset-id string
+          const txCache = {};
+          const getOrBuildTex = (assetId) => {
+            if (txCache[assetId]) return txCache[assetId];
+            const imgEl = document.querySelector(assetId);
+            if (!imgEl || !imgEl.complete) return null;
+            const tex            = new THREE.Texture(imgEl);
+            tex.flipY            = false;
+            tex.minFilter        = THREE.LinearMipmapLinearFilter;
+            tex.generateMipmaps  = true;
+            try {
+              const r = folio.sceneEl.renderer;
+              if (r) tex.anisotropy = Math.min(16, r.capabilities.getMaxAnisotropy());
+            } catch (e) {}
+            tex.needsUpdate      = true;
+            txCache[assetId]     = tex;
+            return tex;
           };
 
+          const playClick = () => {
+            if (clickSoundEl && clickSoundEl.components.sound) {
+              clickSoundEl.components.sound.stopSound();
+              clickSoundEl.components.sound.playSound();
+            }
+          };
 
-          // ── Page data ─────────────────────────────────────────────────────
-          // Updated text from 02/04/26 version.
-          // NOTE: Unicode ellipsis (U+2026 "…") replaced with three ASCII
-          // periods "..." throughout, because A-Frame's default MSDF bitmap
-          // font does not include U+2026 and renders it as a blank character.
-
+          // Page data
           const lat1 = "De Scocia\n\nScocia est insule in quo est anglia suprema portio et in aquilone versa. Flumibus haud magnis et monte quodam ab anglia discreta. Hic nos brunali tempore fuimus cum sol paulo amplius quam tris horis terram illusiaret. Jacobus eo tempore regnabat quadratus et multo abdomine grauis. qui cum olim in anglia captus . xi . annis in custodia fuisset. ac dimissus tandem suscepta ex anglica coniuge domum reuersus plures regulos gladio percussisset. et ipse tandem a suis domesticis interfectus est. Inter quos vltione pacata filius eius regnum suscepit. Audiueramus nos olim arborem esse in scocia quae supra ripas fluminis enata fructus produceret anetarum formam habentes et eos cum quidem maturitati proximi essent sponte sua decider. alios in terram. alios in aquam. et in terra deiectos putrescere. in aquam vero dimersos mox aviatos enatare sub aquis et in aera plumis plenisque euestigio euolare. De quare cum aidius inuestigaremus didicimus miracula spe remotius fugere famosamque arborem non in scocia sed apud olchades insulas inueniri. Illud tamen nobis in scocia miraculum praesentatum est. nam pauperes pene nudos ad ecclesias mendicantes acceptis lapidibus elemosine gratia datis letos abiisse conspeximus. Id genus lapidis siue sulphurea siue alia pingues materia praeditum pro ligno quo regio nuda est comburitur.";
 
           const eng1 = "Concerning Scotland\n\nScotland is of the island in which England is the upper part, and it lies toward the north. It is separated from England by rivers not large and by a certain mountain. We were here in the winter season, when the sun shone upon the earth for a little more than three hours. [King] James [IV] reigned at that time, square-built and burdened with a very large belly. He, having once been captured in England and kept in custody for eleven years, and at last released, after taking an English wife, returned home and struck down several petty rulers with the sword. And he himself was at last killed by his own household, among whom, vengeance having been settled, his son took up the kingdom. We had once heard that there was in Scotland a tree which, growing above the banks of a river, produced fruits having the form of ducks, and these indeed, when they were near maturity, fell of their own accord, some onto the land, others into the water. And those cast onto the land rot; but those plunged into the water, however, soon become birds, swim beneath the waters, and fly into the air with feathers and full plumage. About the matter, therefore, when we investigated more eagerly, we learned that marvels flee closer scrutiny, and that the famous tree is found not in Scotland but among the Orkney Islands. Yet this marvel was shown to us in Scotland: for we saw poor people, almost naked, begging at the churches, who went away rejoicing after receiving stones given as alms. This kind of stone, endowed with a sulphurous or other rich material, is burned in place of wood, of which the region is bare.";
 
           const lat2 = "Quorum cateruis sic gloriose circumuallatus et in gloria humane potencie sic confisus usque ad locum qui bannokburn dicitur perueniens tentoria sua fixit Cui rex robertus cum paucis respectu multitudinis eius in domino confidens et in deum virtutem faciens ac beatum andream apostolum et sanctum iohannem baptistam in eius auxilium ad miserabilem populum scocie de seruitute indebita liberandum postulans cum dicto rege anglie mortale commisit bellum ac ipsum cum omni pompa sua et innumerabili potencia auxiliante altissimo cuius est victoriam dare, et in cuius manu sunt omnes fines terre in fugam conuertit ubi comes glouernie et multi nobiles anglie ceciderunt interfecti... alii fugati . alii capti . alii occisi... . per captiuos enim non solum regina scocie cum suis liberati sunt dimissa est ymmo eciam omnes alii scoti in carceribus deputati sine redempcione liberati sunt . Ac eciam omnes alii in dicto bello existentes inestimabiliter sunt ditati Inter quos captus est ille ditissimus iohannes de britania per quem liberata fuit regina scocie captiua quod absurdum esset audire reginam captiuam esse Item pro ipso liberatus est episcopus de glasguw vir venerabilis et magne senectutis in carceribus similiter per tirannum detentus londoniis [.]";
 
-          // FIX: U+2026 (…) replaced with ... (three ASCII periods) throughout.
-          // Original had "fell slain…." and "others were killed…" which rendered
-          // as blank gaps in A-Frame's a-text component.
           const eng2 = "Surrounded so gloriously by his companies, and trusting so confidently in the glory of human power, he [King Edward II of England] came as far as the place called Bannockburn and pitched his tents there. Against him King Robert, with only a few men, compared with his multitude, trusting in the Lord and taking strength in God, and calling upon Blessed Andrew the Apostle and Saint John the Baptist for aid in freeing the wretched people of Scotland from unjust servitude, joined mortal battle with the said king of England. And him, with all his pomp and his innumerable power, the Most High assisting - whose prerogative it is to grant victory, and in whose hand are all the ends of the earth - he turned to flight. There the Earl of Gloucester and many nobles of England fell slain.... Others were put to flight; others were captured; others were killed... For by means of the captives not only was the queen of Scotland, with her people, set free; indeed (what is more), all the other Scots who had been assigned to prisons were freed without ransom. And also all the others who were present in the said battle were enriched beyond measure. Among these was captured that very rich man, John of Brittany, through whom the queen of Scotland was freed from captivity, something which it would be absurd even to hear, namely that a queen should be held captive. Likewise, in exchange for him, the bishop of Glasgow, a venerable man of great age, who had similarly been held in prison by the tyrant, was freed at London [.]";
-
-
-          // ── Pages array ───────────────────────────────────────────────────
 
           const pages = [
             {
-              src:        '#manuscript1',
-              lat:        lat1,
-              eng:        eng1,
-              title:      'Liber Chronicarum, 1493,\nHartmann Schedel',
-              hover:      'Liber Chronicarum',
-              latinSrc:   '#latin1-track',
-              englishSrc: '#english1-track'
+              src: '#manuscript1', lat: lat1, eng: eng1,
+              title: 'Liber Chronicarum, 1493,\nHartmann Schedel',
+              hover: 'Liber Chronicarum',
+              latinSrc: '#latin1-track', englishSrc: '#english1-track'
             },
             {
-              src:        '#manuscript2',
-              lat:        lat2,
-              eng:        eng2,
-              title:      'Liber Pluscardensis,\nbefore 1500',
-              hover:      'Liber Pluscardensis',
-              latinSrc:   '#latin2-track',
-              englishSrc: '#english2-track'
+              src: '#manuscript2', lat: lat2, eng: eng2,
+              title: 'Liber Pluscardensis,\nbefore 1500',
+              hover: 'Liber Pluscardensis',
+              latinSrc: '#latin2-track', englishSrc: '#english2-track'
             }
           ];
 
           this.el.pages = pages;
-
-
-          // ── Initial page ──────────────────────────────────────────────────
-
           transcrText.setAttribute('value', pages[0].lat);
-
           translText.setAttribute('value',  pages[0].eng);
 
-
           folio.addEventListener('mouseenter', () => hoverTooltip.setAttribute('visible', 'true'));
-
           folio.addEventListener('mouseleave', () => hoverTooltip.setAttribute('visible', 'false'));
 
-
-          // ── doSwap ────────────────────────────────────────────────────────
-          // dir: +1 = forward, -1 = backward. Wraps via modular arithmetic.
-          // silent: true suppresses the UI click sound (curl already played
-          //         its own page-turn sound).
-
+          // doSwap: A-Frame setAttribute + direct Three.js texture injection
           const doSwap = (dir, silent) => {
-
             if (!silent) playClick();
-
             currentPage = ((currentPage - 1 + dir + pages.length) % pages.length) + 1;
-
             this.el.currentAudioPage = currentPage;
-
             if (this.el.currentPanelAudio) {
-
               this.el.currentPanelAudio.pause();
-
               this.el.currentPanelAudio.currentTime = 0;
-
               this.el.currentPanelAudio = null;
-
             }
-
             const page = pages[currentPage - 1];
-
+            // Standard A-Frame path (desktop)
             folio.setAttribute('src', page.src);
-
+            // Direct Three.js injection (VR reliable path)
+            const tex = getOrBuildTex(page.src);
+            if (tex) {
+              const mesh = folio.getObject3D('mesh');
+              if (mesh && mesh.material) {
+                mesh.material.map         = tex;
+                mesh.material.needsUpdate = true;
+              }
+            }
             document.querySelector('#hover-text').setAttribute('value', page.hover);
-
             transcrText.setAttribute('value', page.lat);
-
             translText.setAttribute('value',  page.eng);
-
             document.querySelector('#info-text').setAttribute('value', page.title);
-
           };
 
           this.el.doSwap = doSwap;
 
-
-          // ── Zoom ──────────────────────────────────────────────────────────
-
+          // Zoom
           document.querySelector('#zoom-button').addEventListener('click', () => {
-
-            playClick();
-
-            zoomed = !zoomed;
-
+            playClick(); zoomed = !zoomed;
             infoPanel.setAttribute('visible', !zoomed);
-
             zoomAnchor.setAttribute('animation', {
-
-              property: 'position',
-
-              to:       zoomed ? '0 1.5 -0.6' : '0 1.1 -1.4',
-
-              dur:      800,
-
-              easing:   'easeInOutQuad'
-
+              property: 'position', to: zoomed ? '0 1.5 -0.6' : '0 1.1 -1.4', dur: 800, easing: 'easeInOutQuad'
             });
-
           });
 
-
-          // ── Materiality ───────────────────────────────────────────────────
-
+          // Materiality
           document.querySelector('#mat-button').addEventListener('click', () => {
-
-            playClick();
-
-            materialityMode = !materialityMode;
-
+            playClick(); materialityMode = !materialityMode;
             folio.setAttribute('material', {
-
               metalness: materialityMode ? 0.9 : 0.1,
-
               roughness: materialityMode ? 0.1 : 0.8
-
             });
-
           });
 
+          // Swap button
+          document.querySelector('#swap-button').addEventListener('click', () => { doSwap(1, false); });
 
-          // ── Swap Page (UI button — always forward) ────────────────────────
-
-          document.querySelector('#swap-button').addEventListener('click', () => {
-
-            doSwap(1, false);
-
-          });
-
-
-          // ── Scale ─────────────────────────────────────────────────────────
-
+          // Scale
           document.querySelector('#scale-button').addEventListener('click', () => {
-
             playClick();
-
-            let s         = folio.getAttribute('scale');
-
-            let nextScale = s.x > 1.3 ? "0.7 0.7 0.7" : (s.x < 0.8 ? "1 1 1" : "1.5 1.5 1.5");
-
-            folio.setAttribute('scale', nextScale);
-
+            const s = folio.getAttribute('scale');
+            folio.setAttribute('scale', s.x > 1.3 ? '0.7 0.7 0.7' : (s.x < 0.8 ? '1 1 1' : '1.5 1.5 1.5'));
           });
 
-
-          // ── Mute ──────────────────────────────────────────────────────────
-
+          // Mute
           muteBtn.addEventListener('click', () => {
-
-            playClick();
-
-            isMuted = !isMuted;
-
+            playClick(); isMuted = !isMuted;
             if (soundEl.components.sound) {
-
               isMuted ? soundEl.components.sound.pauseSound() : soundEl.components.sound.playSound();
-
             }
-
             muteBtn.setAttribute('color', isMuted ? '#8B0000' : '#FF4500');
-
             muteLabel.setAttribute('value', isMuted ? 'UNMUTE' : 'MUTE');
-
           });
 
-
+          // First-click audio unlock
           window.addEventListener('click', () => {
-
             if (soundEl.components.sound) soundEl.components.sound.playSound();
-
             document.querySelector('#sound-ui').setAttribute('visible', 'false');
-
           }, { once: true });
-
         }
-
       });
 
     </script>
-
   </head>
-
 
   <body>
 
     <a-scene scriptorium-logic renderer="antialias: true; colorManagement: true;">
 
       <a-assets>
-
-        <!-- ═══════════════════════════════════════════════════════════════
-             ADDING A NEW FOLIO:
-             1. Add an <img> and matching <audio> tracks here.
-             2. Add a new entry to the pages[] array in scriptorium-logic.
-             No other code changes are needed anywhere.
-             ═══════════════════════════════════════════════════════════════ -->
-
         <img id="manuscript1" src="folio.jpg">
-
         <img id="manuscript2" src="folio2.jpg">
-
-        <audio id="music-track"    src="chant.mp3"     preload="auto"></audio>
-
-        <audio id="click-track"    src="click.mp3"     preload="auto"></audio>
-
-        <audio id="pageturn-track" src="pageturn1.mp3" preload="auto"></audio>
-
-        <audio id="latin1-track"   src="latin1.mp3"    preload="auto"></audio>
-
-        <audio id="english1-track" src="english1.mp3"  preload="auto"></audio>
-
-        <audio id="latin2-track"   src="latin2.mp3"    preload="auto"></audio>
-
-        <audio id="english2-track" src="english2.mp3"  preload="auto"></audio>
-
+        <audio id="music-track"    src="chant.mp3"      preload="auto"></audio>
+        <audio id="click-track"    src="click.mp3"      preload="auto"></audio>
+        <audio id="pageturn-track" src="pageturn1.mp3"  preload="auto"></audio>
+        <audio id="latin1-track"   src="latin1.mp3"     preload="auto"></audio>
+        <audio id="english1-track" src="english1.mp3"   preload="auto"></audio>
+        <audio id="latin2-track"   src="latin2.mp3"     preload="auto"></audio>
+        <audio id="english2-track" src="english2.mp3"   preload="auto"></audio>
       </a-assets>
 
-
       <a-entity environment="preset: starry; lighting: none;"></a-entity>
-
       <a-entity light="type: ambient; intensity: 0.4;"></a-entity>
-
       <a-entity id="ambient-sound" sound="src: #music-track; loop: true; volume: 0.5;"></a-entity>
-
       <a-entity id="click-sound"   sound="src: #click-track; volume: 1.0; poolSize: 5;"></a-entity>
-
       <a-text id="sound-ui" value="CLICK TO START" position="0 2.2 -2" align="center" color="#FFD700" width="3"></a-text>
 
-
-      <!-- vr-locomotion is on #rig so all children (camera + controllers)
-           move together. Left thumbstick = walk/strafe, right = snap turn. -->
-
       <a-entity id="rig" vr-locomotion>
-
         <a-entity camera look-controls wasd-controls position="0 1.6 0">
-
           <a-cursor id="cursor" position="0 0 -0.4" scale="0.4 0.4 0.4"
                     raycaster="objects: .clickable" color="#FFD700"
-
-                    animation__fusing="property: scale; from: 0.4 0.4 0.4;
-                                       to: 0.04 0.04 0.04; dur: 1500; startEvents: fusing;"
-
-                    animation__reset="property: scale; to: 0.4 0.4 0.4;
-                                      dur: 500; startEvents: mouseleave;">
-
+                    animation__fusing="property: scale; from: 0.4 0.4 0.4; to: 0.04 0.04 0.04; dur: 1500; startEvents: fusing;"
+                    animation__reset="property: scale; to: 0.4 0.4 0.4; dur: 500; startEvents: mouseleave;">
           </a-cursor>
-
         </a-entity>
-
         <a-entity laser-controls="hand: left"  raycaster="objects: .clickable; far: 10;"></a-entity>
-
         <a-entity laser-controls="hand: right" raycaster="objects: .clickable; far: 10;"></a-entity>
-
       </a-entity>
 
-
       <a-entity id="zoom-anchor" position="0 1.1 -1.4">
-
-          <!-- drag-rotate now uses right-click; left-click is for curl/hotspots -->
 
           <a-plane id="folio-object" class="clickable"
                    drag-rotate vr-grab-rotate page-curl folio-hotspots
@@ -1729,81 +1004,51 @@
                         position="0 0.5 0.5" flicker></a-entity>
 
               <a-entity id="hover-tooltip" position="0 0.55 0.05" visible="false">
-
                   <a-plane width="0.8" height="0.15" color="black" opacity="0.8"></a-plane>
-
                   <a-text id="hover-text" value="Liber Chronicarum" color="white"
                           align="center" width="0.8" position="0 0 0.05"></a-text>
-
               </a-entity>
 
           </a-plane>
 
-
           <a-entity id="button-group" position="0.9 0 0.1" rotation="0 -25 0">
-
               <a-sphere id="zoom-button"  class="clickable" haptic-button position="0 0.25 0"  radius="0.04" color="#FFD700"><a-text value="ZOOM/RESET" position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
-
-              <a-sphere id="mat-button"   class="clickable" haptic-button position="0 0.12 0"  radius="0.04" color="#C0C0C0"><a-text value="MATERIAL"  position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
-
-              <a-sphere id="swap-button"  class="clickable" haptic-button position="0 0 0"     radius="0.04" color="#cd7f32"><a-text value="SWAP PAGE" position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
-
-              <a-sphere id="scale-button" class="clickable" haptic-button position="0 -0.12 0" radius="0.04" color="#4CC3D9"><a-text value="SCALE"     position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
-
+              <a-sphere id="mat-button"   class="clickable" haptic-button position="0 0.12 0"  radius="0.04" color="#C0C0C0"><a-text value="MATERIAL"   position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
+              <a-sphere id="swap-button"  class="clickable" haptic-button position="0 0 0"     radius="0.04" color="#cd7f32"><a-text value="SWAP PAGE"  position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
+              <a-sphere id="scale-button" class="clickable" haptic-button position="0 -0.12 0" radius="0.04" color="#4CC3D9"><a-text value="SCALE"      position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
               <a-box id="mute-button" class="clickable" haptic-button
                      position="0 -0.25 0" width="0.06" height="0.06" depth="0.06" color="#FF4500">
-
-                  <a-text id="mute-label" value="MUTE" position="0.08 0 0"
-                          scale="0.22 0.22 0.22" color="white"></a-text>
-
+                  <a-text id="mute-label" value="MUTE" position="0.08 0 0" scale="0.22 0.22 0.22" color="white"></a-text>
               </a-box>
-
           </a-entity>
 
           <a-entity id="info-panel" position="-0.9 0 0.1" rotation="0 35 0">
-
               <a-plane width="0.6" height="0.4" color="#111" opacity="0.9"></a-plane>
-
               <a-text id="info-text" value="Liber Chronicarum, 1493,\nHartmann Schedel"
                       color="#FFD700" align="center" width="0.7" position="0 0 0.05"></a-text>
-
           </a-entity>
 
       </a-entity>
-
 
       <a-entity id="translation-panel"
                 position="-2.06 1.5 -0.75" look-at-user
                 panel-audio="type: english">
-
           <a-plane width="1.2" height="1.8" color="#111" opacity="0.9" material="side: double;"></a-plane>
-
-          <a-text value="ENGLISH TRANSLATION" color="#FFD700" align="center"
-                  width="1.1" position="0 0.8 0.02"></a-text>
-
+          <a-text value="ENGLISH TRANSLATION" color="#FFD700" align="center" width="1.1" position="0 0.8 0.02"></a-text>
           <a-text id="transl-text" color="white" align="center" baseline="top"
                   width="1.05" position="0 0.6 0.02" wrap-count="50"></a-text>
-
       </a-entity>
-
 
       <a-entity id="transcription-panel"
                 position="-2.06 1.5 0.75" look-at-user
                 panel-audio="type: latin">
-
           <a-plane width="1.2" height="1.8" color="#111" opacity="0.9" material="side: double;"></a-plane>
-
-          <a-text value="LATIN TRANSCRIPTION" color="#FFD700" align="center"
-                  width="1.1" position="0 0.8 0.02"></a-text>
-
+          <a-text value="LATIN TRANSCRIPTION" color="#FFD700" align="center" width="1.1" position="0 0.8 0.02"></a-text>
           <a-text id="transcr-text" color="white" align="center" baseline="top"
                   width="1.05" position="0 0.6 0.02" wrap-count="50"></a-text>
-
       </a-entity>
-
 
     </a-scene>
 
   </body>
-
 </html>
