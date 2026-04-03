@@ -135,6 +135,7 @@
 
                 camEl.object3D.getWorldDirection(this._forward);
                 this._forward.y = 0;
+                this._forward.negate();
                 this._forward.normalize();
 
                 this._right.crossVectors(
