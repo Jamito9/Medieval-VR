@@ -766,8 +766,8 @@
             const gp   = tc.controller && tc.controller.gamepad;
             if (gp && gp.hapticActuators && gp.hapticActuators.length > 0) gp.hapticActuators[0].pulse(0.65, 80);
           };
-          zone.addEventListener('mouseenter', (evt) => { isTargeted = true;  pulseHaptic(evt); });
-          zone.addEventListener('mouseleave', ()     => { isTargeted = false; });
+          zone.addEventListener('mouseenter', (evt) => { panel.classList.add('audio-hovered'); isTargeted = true;  pulseHaptic(evt); });
+          zone.addEventListener('mouseleave', ()     => { panel.classList.remove('audio-hovered'); isTargeted = false; });
           const getAudio = () => {
             const pages = scene.pages; if (!pages) return null;
             const page  = pages[(scene.currentAudioPage||1)-1]; if (!page) return null;
