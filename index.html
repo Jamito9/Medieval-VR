@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <title>Medieval Scriptorium – Test Cockpit Build</title>
     <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
-    <script src="https://unpkg.com/aframe-environment-component@1.3.3/dist/aframe-environment-component.min.js"></script>
+    <script src="https://unpkg.com/[email protected]/dist/aframe-environment-component.min.js"></script>
     <script>
 
       AFRAME.registerComponent('look-at-user', {
@@ -300,8 +300,8 @@
                 setTimeout(() => {
                   if (this._animAborted) return;
                   const dir = capturedSide === 'right' ? 1 : -1;
-                  this.resetCurl();
                   if (scene.doSwap) scene.doSwap(dir, true);
+                  this.resetCurl();
                 }, 50);
               }
             };
@@ -423,7 +423,22 @@
               const hs = folio.components['folio-hotspots'];
               return hs && hs.targetedPanel !== null;
             };
-            const isAudioHovered = () => document.querySelector('.audio-hovered') !== null;
+            const isAudioHovered = () => {
+              const ctrls = [rightCtrl, leftCtrl];
+              for (const ctrl of ctrls) {
+                if (!ctrl) continue;
+                const rc = ctrl.components && ctrl.components.raycaster;
+                if (!rc || !rc.intersectedEls) continue;
+                for (const el of rc.intersectedEls) {
+                  let node = el;
+                  while (node && node !== document) {
+                    if (node.hasAttribute && node.hasAttribute('panel-audio')) return true;
+                    node = node.parentNode;
+                  }
+                }
+              }
+              return false;
+            };
 
             if (rightCtrl) {
               rightCtrl.addEventListener('abuttondown', () => {
@@ -831,7 +846,7 @@
             const imgEl = document.querySelector(assetId);
             if (!imgEl || !imgEl.complete) return null;
             const tex            = new THREE.Texture(imgEl);
-            tex.flipY            = false;
+            tex.flipY            = true;
             tex.minFilter        = THREE.LinearMipmapLinearFilter;
             tex.generateMipmaps  = true;
             try {
@@ -1052,5 +1067,4 @@
 
     </a-scene>
 
-  </body>
-</html>
+<span clas
