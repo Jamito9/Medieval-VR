@@ -154,6 +154,8 @@
           this._animAborted     = false;
           this._watchdog        = null;
           this._mouseX          = 0;
+          // Saved texture map used to restore folio on snapBack
+          this._savedTexMap     = null;
 
           this._trackMouse = (e) => { this._mouseX = e.clientX; };
           window.addEventListener('mousemove', this._trackMouse);
@@ -206,8 +208,8 @@
           this.shadowMesh.visible    = false;
           folio.object3D.add(this.shadowMesh);
 
-          // Back page: shows the destination texture during the curl animation.
-          // Its A-Frame-loaded texture is copied to the folio when the turn commits.
+          // backPage: visual backdrop showing destination texture during animation.
+          // Also used as a texture-source fallback when injecting into the folio.
           this.backPage = document.createElement('a-plane');
           this.backPage.setAttribute('width',    '1.1');
           this.backPage.setAttribute('height',   '0.8');
@@ -241,11 +243,57 @@
           const easeInOut = (t) => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
           const easeOut   = (t) => 1 - (1-t)*(1-t);
 
+          // ── _injectDestTex ───────────────────────────────────────────────
+          // Three-layer texture injection used at curl-commit time.
+          // Layer 1: folio.setAttribute was called at startCurl — A-Frame may
+          //          already have applied it (works on PC and fast VR frames).
+          // Layer 2: backPage copy — the backPage had the full animation
+          //          duration (450 ms) to receive the texture via A-Frame.
+          // Layer 3: raw THREE.Texture from the preloaded <img> element —
+          //          guaranteed to work if the asset is in <a-assets>.
+          const _injectDestTex = (destSrc) => {
+            const fMesh = folio.getObject3D('mesh');
+            if (!fMesh || !fMesh.material) return;
+
+            // Layer 1: folio already updated by A-Frame (check map changed)
+            if (fMesh.material.map && fMesh.material.map !== this._savedTexMap) return;
+
+            // Layer 2: backPage mesh copy
+            const bpMesh = this.backPage.getObject3D('mesh');
+            if (bpMesh && bpMesh.material && bpMesh.material.map &&
+                bpMesh.material.map !== this._savedTexMap) {
+              fMesh.material.map         = bpMesh.material.map;
+              fMesh.material.needsUpdate = true;
+              return;
+            }
+
+            // Layer 3: build texture directly from preloaded <img> element
+            const imgEl = document.querySelector(destSrc);
+            if (imgEl && imgEl.complete && imgEl.naturalWidth > 0) {
+              const tex = new THREE.Texture(imgEl);
+              tex.flipY           = true;
+              tex.encoding        = THREE.sRGBEncoding;
+              tex.minFilter       = THREE.LinearMipmapLinearFilter;
+              tex.generateMipmaps = true;
+              try {
+                const r = folio.sceneEl.renderer;
+                if (r) tex.anisotropy = Math.min(16, r.capabilities.getMaxAnisotropy());
+              } catch (e) {}
+              tex.needsUpdate        = true;
+              fMesh.material.map         = tex;
+              fMesh.material.needsUpdate = true;
+            }
+          };
+
+          // ── completeCurl ─────────────────────────────────────────────────
           this._completeCurl = () => {
             playPageTurn();
             this.activeController = null;
             const startProg    = this.peelProgress;
             const capturedSide = this.curlSide;
+            const capturedDest = scene.pages
+              ? scene.pages[((scene.currentAudioPage||1) - 1 + (capturedSide === 'right' ? 1 : -1) + scene.pages.length) % scene.pages.length].src
+              : null;
             const startTime    = performance.now();
             const duration     = 450;
             const animate = (now) => {
@@ -260,26 +308,8 @@
                 setTimeout(() => {
                   if (this._animAborted) return;
                   const dir = capturedSide === 'right' ? 1 : -1;
-
-                  // ── SWAP FIX ─────────────────────────────────────────────
-                  // The backPage has been visible for the full 450 ms animation,
-                  // so A-Frame has had ample time to load its texture. Copy that
-                  // texture directly onto the folio mesh NOW — before resetCurl
-                  // restores opacity and reveals the folio — so there is zero
-                  // flash of the old image. No flipY guesswork needed: we reuse
-                  // the exact texture object A-Frame already uploaded to the GPU.
-                  const bpMesh = this.backPage.getObject3D('mesh');
-                  const fMesh  = folio.getObject3D('mesh');
-                  if (bpMesh && bpMesh.material && bpMesh.material.map &&
-                      fMesh  && fMesh.material) {
-                    fMesh.material.map         = bpMesh.material.map;
-                    fMesh.material.needsUpdate = true;
-                  }
-
-                  // doSwap updates page index, text panels and metadata.
-                  // It also calls setAttribute('src', ...) which queues A-Frame's
-                  // own async texture update — that will simply confirm the same
-                  // texture we already placed above, so no second flash.
+                  // Inject destination texture into folio before revealing it
+                  if (capturedDest) _injectDestTex(capturedDest);
                   if (scene.doSwap) scene.doSwap(dir, true);
                   this.resetCurl();
                 }, 50);
@@ -288,6 +318,7 @@
             requestAnimationFrame(animate);
           };
 
+          // ── snapBack ─────────────────────────────────────────────────────
           this._snapBack = () => {
             this.activeController = null;
             const startProg    = this.peelProgress;
@@ -303,12 +334,27 @@
               if (raw < 1) {
                 requestAnimationFrame(animate);
               } else {
-                setTimeout(() => { if (!this._animAborted) this.resetCurl(); }, 50);
+                setTimeout(() => {
+                  if (!this._animAborted) {
+                    // Restore folio to the current (unturned) page texture
+                    const fMesh = folio.getObject3D('mesh');
+                    if (fMesh && fMesh.material && this._savedTexMap) {
+                      fMesh.material.map         = this._savedTexMap;
+                      fMesh.material.needsUpdate = true;
+                    }
+                    // Re-sync A-Frame src attribute to match
+                    const pages  = scene.pages;
+                    const curSrc = pages ? pages[(scene.currentAudioPage||1)-1].src : null;
+                    if (curSrc) folio.setAttribute('src', curSrc);
+                    this.resetCurl();
+                  }
+                }, 50);
               }
             };
             requestAnimationFrame(animate);
           };
 
+          // ── startCurl ────────────────────────────────────────────────────
           const startCurl = (side, controllerEl) => {
             if (this.isCurling) return;
             const pages      = scene.pages;
@@ -318,6 +364,9 @@
 
             const folioMesh = folio.getObject3D('mesh');
             if (folioMesh && folioMesh.material) {
+              // Snapshot current texture for snapBack restoration
+              this._savedTexMap = folioMesh.material.map || null;
+
               if (folioMesh.material.map) {
                 this.curlMat.map             = folioMesh.material.map;
                 this.curlMat.map.minFilter   = THREE.LinearFilter;
@@ -330,12 +379,20 @@
               this.curlMat.roughness     = folioMesh.material.roughness;
               this.backCurlMat.metalness = folioMesh.material.metalness;
               this.backCurlMat.roughness = folioMesh.material.roughness;
-              folioMesh.material.transparent = true;
-              folioMesh.material.opacity     = 0;
-              folioMesh.material.needsUpdate = true;
+
+              // Hide the folio mesh via .visible so A-Frame material updates
+              // (triggered below) still apply correctly to the material object.
+              // Using .visible rather than opacity means A-Frame cannot
+              // accidentally undo the hide by recreating/resetting the material.
+              folioMesh.visible = false;
+
+              // Tell A-Frame to start loading the destination texture onto the
+              // folio now — it has the full 450 ms animation to complete this.
+              folio.setAttribute('src', pages[nextIdx].src);
             }
 
-            // Set backPage src now — A-Frame will load it during the 450 ms animation.
+            // backPage also receives the destination src as a visual backdrop
+            // and as a secondary texture source for _injectDestTex Layer 2.
             this.backPage.setAttribute('src', pages[nextIdx].src);
             this.backPage.setAttribute('visible', 'true');
             this.curlMesh.visible     = true;
@@ -358,6 +415,7 @@
             this._watchdog = setTimeout(() => { if (this.isCurling) { this.resetCurl(); } }, 3500);
           };
 
+          // Desktop mouse handlers
           this._onMouseMoveCurl = (e) => {
             if (!this.isCurling || this.isVR) return;
             const dx          = this.startMouseX - e.clientX;
@@ -398,7 +456,7 @@
               return hs && hs.targetedPanel !== null;
             };
 
-            // Synchronous raycaster check — no CSS class race condition.
+            // Synchronous raycaster walk — no CSS-class race condition
             const isAudioHovered = () => {
               const ctrls = [rightCtrl, leftCtrl];
               for (const ctrl of ctrls) {
@@ -499,25 +557,31 @@
           clearTimeout(this._watchdog);
           this._watchdog    = null;
           this._animAborted = true;
+
           const folioMesh = this.el.getObject3D('mesh');
-          if (folioMesh && folioMesh.material) {
-            folioMesh.material.opacity     = 1;
-            folioMesh.material.transparent = false;
-            folioMesh.material.needsUpdate = true;
+          if (folioMesh) {
+            // Reveal the folio by restoring .visible — this pairs with the
+            // folioMesh.visible = false set in startCurl. It is unaffected
+            // by any A-Frame material recreations that may have occurred.
+            folioMesh.visible = true;
           }
+
           this.curlMesh.visible     = false;
           this.backCurlMesh.visible = false;
           this.shadowMesh.visible   = false;
           this.backPage.setAttribute('visible', 'false');
+
           const posAttr = this.curlGeo.attributes.position;
           for (let i = 0; i < posAttr.count; i++) {
             posAttr.setXYZ(i, this.origX[i], this.origY[i], 0);
           }
           posAttr.needsUpdate = true;
+
           this.isCurling         = false;
           this.curlSide          = null;
           this.activeController  = null;
           this.peelProgress      = 0;
+          this._savedTexMap      = null;
           this.shadowMat.opacity     = 0;
           this.shadowMesh.scale.x    = 1;
           this.shadowMesh.position.x = 0;
@@ -811,12 +875,6 @@
           folio.addEventListener('mouseenter', () => hoverTooltip.setAttribute('visible', 'true'));
           folio.addEventListener('mouseleave', () => hoverTooltip.setAttribute('visible', 'false'));
 
-          // doSwap updates page index, text panels, and metadata.
-          // When called from the curl animation (silent=true), the folio texture
-          // has already been updated by copying from the backPage mesh, so only
-          // setAttribute is needed here (confirms state, loads for next turn).
-          // When called from the button (silent=false), setAttribute handles the
-          // texture since there is no backPage copy to rely on.
           const doSwap = (dir, silent) => {
             if (!silent) playClick();
             currentPage = ((currentPage - 1 + dir + pages.length) % pages.length) + 1;
