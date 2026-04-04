@@ -422,11 +422,12 @@
               const hs = folio.components['folio-hotspots'];
               return hs && hs.targetedPanel !== null;
             };
+            const isAudioHovered = () => document.querySelector('.audio-hovered') !==null;
 
             if (rightCtrl) {
               rightCtrl.addEventListener('abuttondown', () => {
                 if (!this.isVR || this.isCurling) return;
-                if (isHotspotTargeted()) return;
+                if (isHotspotTargeted()) || isAudioHovered()) return;
                 startCurl('right', rightCtrl);
               });
               rightCtrl.addEventListener('abuttonup', () => {
@@ -437,7 +438,7 @@
             if (leftCtrl) {
               leftCtrl.addEventListener('xbuttondown', () => {
                 if (!this.isVR || this.isCurling) return;
-                if (isHotspotTargeted()) return;
+                if (isHotspotTargeted()) || isAudioHovered()) return;
                 startCurl('left', leftCtrl);
               });
               leftCtrl.addEventListener('xbuttonup', () => {
@@ -579,7 +580,7 @@
           }
           this.activeController.object3D.getWorldPosition(this._ctrlPos);
           const deltaX      = this._ctrlPos.x - this.startX;
-          const sensitivity = 3.0;
+          const sensitivity = 4.0;
           let newProgress;
           if (this.curlSide === 'right') {
             newProgress = Math.max(0, Math.min(1, -deltaX * sensitivity));
