@@ -395,7 +395,7 @@
           };
           this._onMouseUpCurl = () => {
             if (!this.isCurling || this.isVR) return;
-            if (this.peelProgress >= 0.5) { this._completeCurl(); } else { this._snapBack(); }
+            if (this.peelProgress >= 0.25) { this._completeCurl(); } else { this._snapBack(); }
           };
           window.addEventListener('mousemove', this._onMouseMoveCurl);
           window.addEventListener('mouseup',   this._onMouseUpCurl);
