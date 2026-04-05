@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <title>Medieval Scriptorium – Test Cockpit Build</title>
     <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
+    <script src="https://unpkg.com/aframe-environment-component@1.3.3/dist/aframe-environment-component.min.js"></script>
     <script>
 
       AFRAME.registerComponent('look-at-user', {
@@ -1000,71 +1001,50 @@
         <audio id="english2-track" src="english2.mp3"   preload="auto"></audio>
       </a-assets>
 
-      <!--
-        ═══════════════════════════════════════════════════════════════════
-        MEDIEVAL LIBRARY ENVIRONMENT
-        ═══════════════════════════════════════════════════════════════════
-        The library model replaces the starry environment entirely.
-
-        SCALE GUIDE (adjust scale= if the room is the wrong size):
-          scale="1 1 1"         — model exported in metres (default, try first)
-          scale="0.1 0.1 0.1"   — model exported in decimetres
-          scale="0.01 0.01 0.01" — model exported in centimetres
-
-        ORIENTATION GUIDE (adjust rotation= if room faces wrong way):
-          rotation="0 0 0"    — room front faces −Z (default, A-Frame forward)
-          rotation="0 180 0"  — room front faces +Z  (flip if room is backwards)
-
-        POSITION GUIDE (adjust position= if floor level is wrong):
-          position="0 0 0"    — room floor sits at world y=0 (default)
-          position="0 −N 0"   — lower the model N metres if floor appears raised
-
-        INTERACTION ZONE (do not place library geometry inside these bounds):
-          X: −2.5 to +1.5 m   Y: 0.0 to 2.5 m   Z: −2.2 to +1.0 m
-          — folio lectern:      (0,   1.1, −1.4)
-          — button panel:       (+0.9, 1.1, −1.3)
-          — info panel:         (−0.9, 1.1, −1.3)
-          — translation panel:  (−2.1, 1.5, −0.75)
-          — transcription panel:(−2.1, 1.5,  0.75)
-        ═══════════════════════════════════════════════════════════════════
+      <!-- ── Starry backdrop ─────────────────────────────────────────────────
+           lighting:none keeps A-Frame from generating its own directional
+           light — we provide all lights manually below so the library model
+           and the folio are lit consistently. The starry sky appears above
+           the library model wherever the ceiling is open or absent.
       -->
+      <a-entity environment="preset: starry; lighting: none;"></a-entity>
 
-      <!-- Medieval library room model -->
+      <!-- ── Medieval library kit ────────────────────────────────────────────
+           Placed at y=0 so its floor sits flush with the aframe-environment
+           ground plane. Scale 1 1 1 assumes the GLB was exported in metres,
+           which matches the existing assets (folio 1.1 m wide, player 1.6 m
+           tall). Rotated 180° on Y so the model's natural "entrance" faces
+           the player standing at origin looking toward −Z.
+
+           The folio lectern (0, 1.1, −1.4), button panel (+0.9, 1.1, −1.3),
+           info panel (−0.9, 1.1, −1.3) and text panels (−2.1, 1.5, −1.0 /
+           −2.1, 1.5, 0.2) all sit inside the open floor area of a typical
+           medieval library room — clear of bookshelves along the walls.
+
+           If the model appears too large:  set scale="0.5 0.5 0.5"
+           If the model faces the wrong way: set rotation="0 0 0"
+           If the floor appears raised:      set position="0 -N 0"
+      -->
       <a-gltf-model
         id="library-room"
         src="#library-gltf"
         position="0 0 0"
-        rotation="0 0 0"
+        rotation="0 180 0"
         scale="1 1 1">
       </a-gltf-model>
 
-      <!-- Fallback sky: near-black warm brown fills any gaps above the ceiling -->
-      <a-sky color="#0a0705"></a-sky>
-
-      <!-- Fallback floor at y=−0.01 to avoid z-fighting with the model's own floor.
-           Dark worn stone colour. Invisible if the model provides a full floor. -->
-      <a-plane
-        rotation="-90 0 0"
-        position="0 -0.01 0"
-        width="40" height="40"
-        material="color: #1a120a; roughness: 1.0; metalness: 0.0; shader: standard;">
-      </a-plane>
-
-      <!-- Ambient: raised to 0.5 — interior stone rooms absorb more light than open sky -->
+      <!-- Shared lighting ───────────────────────────────────────────────────
+           Warm candle-white ambient keeps both the library model and the
+           folio illuminated without harsh shadows on Quest 2.
+           Two amber point lights simulate wall torches / sconces on either
+           side of the room, placed well above and outside the interaction
+           zone so they never intersect any interactive entity.
+      -->
       <a-entity light="type: ambient; color: #ffe4b5; intensity: 0.5;"></a-entity>
-
-      <!-- Atmospheric wall sconces: warm amber-orange, placed clear of all interactive
-           entities and text panels. Two lights keep Quest 2 draw calls manageable.
-           Left sconce sits behind/above the translation & transcription panels.
-           Right sconce mirrors it on the opposite side of the room. -->
-      <a-entity
-        light="type: point; color: #e8823a; intensity: 1.0; distance: 8; decay: 2;"
-        position="-3.5 2.3 -2.0">
-      </a-entity>
-      <a-entity
-        light="type: point; color: #e8823a; intensity: 1.0; distance: 8; decay: 2;"
-        position=" 3.5 2.3 -2.0">
-      </a-entity>
+      <a-entity light="type: point; color: #e8823a; intensity: 1.2; distance: 9; decay: 2;"
+                position="-3.5 2.5 -2.0"></a-entity>
+      <a-entity light="type: point; color: #e8823a; intensity: 1.2; distance: 9; decay: 2;"
+                position=" 3.5 2.5 -2.0"></a-entity>
       <a-entity id="ambient-sound" sound="src: #music-track; loop: true; volume: 0.5;"></a-entity>
       <a-entity id="click-sound"   sound="src: #click-track; volume: 1.0; poolSize: 5;"></a-entity>
       <a-text id="sound-ui" value="CLICK TO START" position="0 2.2 -2" align="center" color="#FFD700" width="3"></a-text>
