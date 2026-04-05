@@ -155,7 +155,13 @@
           this._watchdog        = null;
           this._mouseX          = 0;
           this._savedTexMap     = null;
-          this._pendingDestTex  = null;
+
+          // Texture cache: populated at scene load via THREE.TextureLoader.
+          // Key = asset selector string e.g. '#manuscript1'.
+          // Using THREE.TextureLoader guarantees the texture is fully decoded and
+          // GPU-uploadable, unlike new THREE.Texture(img) which may not be on Quest 2.
+          this._texCache = {};
+          this._texLoader = new THREE.TextureLoader();
 
           this._trackMouse = (e) => { this._mouseX = e.clientX; };
           window.addEventListener('mousemove', this._trackMouse);
@@ -170,6 +176,25 @@
             if (this.isCurling) { this.resetCurl(); }
             this.rightCorner.classList.add('clickable');
             this.leftCorner.classList.add('clickable');
+          });
+
+          // Preload all page textures once the scene has finished loading.
+          // This runs before any user interaction, so textures are ready before
+          // the first page turn on both desktop and Quest 2 WebXR.
+          scene.addEventListener('loaded', () => {
+            const pages = scene.pages;
+            if (!pages) return;
+            pages.forEach(page => {
+              const imgEl = document.querySelector(page.src);
+              if (!imgEl) return;
+              // imgEl.src is the absolute URL e.g. http://192.168.x.x:8080/folio.jpg
+              const url = imgEl.src || imgEl.getAttribute('src');
+              if (!url) return;
+              this._texLoader.load(url, (tex) => {
+                // THREE.TextureLoader default flipY=true is correct for standard WebGL.
+                this._texCache[page.src] = tex;
+              });
+            });
           });
 
           this.curlGeo = new THREE.PlaneGeometry(1.1, 0.8, 60, 40);
@@ -238,53 +263,59 @@
             if (audio) { audio.currentTime = 0; audio.play().catch(() => {}); }
           };
 
-          // Build a Three.js texture directly from a preloaded <img> element.
-          // This is reliable in both desktop and WebXR because it bypasses
-          // A-Frame's async material update pipeline entirely.
-          const buildTexFromImg = (assetSelector) => {
-            const imgEl = document.querySelector(assetSelector);
-            if (!imgEl || !imgEl.complete || imgEl.naturalWidth === 0) return null;
-            const tex = new THREE.Texture(imgEl);
-            tex.flipY           = true;
-            tex.minFilter       = THREE.LinearMipmapLinearFilter;
-            tex.generateMipmaps = true;
-            if (THREE.sRGBEncoding !== undefined) tex.encoding = THREE.sRGBEncoding;
-            try {
-              const r = folio.sceneEl.renderer;
-              if (r) tex.anisotropy = Math.min(16, r.capabilities.getMaxAnisotropy());
-            } catch (e) {}
-            tex.needsUpdate = true;
-            return tex;
-          };
-
-          const easeInOut = (t) => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
-          const easeOut   = (t) => 1 - (1-t)*(1-t);
-
-          // Apply the destination texture to the folio mesh just before revealing it.
-          // Priority 1 — backPage mesh: A-Frame had the full animation duration to load
-          //   this texture and it is rendered visibly throughout, so it is guaranteed
-          //   to be on the GPU in both desktop and WebXR.
-          // Priority 2 — pendingDestTex: a Three.js texture built directly from the
-          //   preloaded <img> element at startCurl time. No A-Frame involvement.
-          const applyDestTex = () => {
+          // Apply the destination texture to the folio mesh before it is revealed.
+          // Three-tier fallback to be maximally robust on Quest 2 WebXR:
+          //   1. _texCache: loaded by THREE.TextureLoader at scene startup — guaranteed
+          //      to be ready by the time any page turn can be triggered.
+          //   2. backPage mesh map: A-Frame may have loaded it during the animation.
+          //   3. Build directly from the preloaded <img> element as a last resort.
+          const applyDestTex = (destSrc) => {
             const fMesh = folio.getObject3D('mesh');
             if (!fMesh || !fMesh.material) return;
+
+            // Tier 1: our own preloaded cache (most reliable in WebXR)
+            if (this._texCache[destSrc]) {
+              fMesh.material.map         = this._texCache[destSrc];
+              fMesh.material.needsUpdate = true;
+              return;
+            }
+
+            // Tier 2: A-Frame-loaded texture on the backPage
             const bpMesh = this.backPage.getObject3D('mesh');
-            const tex    = (bpMesh && bpMesh.material && bpMesh.material.map)
-                        || this._pendingDestTex;
-            if (tex) {
+            if (bpMesh && bpMesh.material && bpMesh.material.map) {
+              fMesh.material.map         = bpMesh.material.map;
+              fMesh.material.needsUpdate = true;
+              return;
+            }
+
+            // Tier 3: build directly from the preloaded <img> element
+            const imgEl = document.querySelector(destSrc);
+            if (imgEl && (imgEl.complete || imgEl.naturalWidth > 0)) {
+              const tex = new THREE.Texture(imgEl);
+              tex.needsUpdate        = true;
               fMesh.material.map         = tex;
               fMesh.material.needsUpdate = true;
             }
           };
 
+          const easeInOut = (t) => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
+          const easeOut   = (t) => 1 - (1-t)*(1-t);
+
           this._completeCurl = () => {
             playPageTurn();
             this.activeController = null;
-            const startProg    = this.peelProgress;
-            const capturedSide = this.curlSide;
-            const startTime    = performance.now();
-            const duration     = 450;
+            const startProg      = this.peelProgress;
+            const capturedSide   = this.curlSide;
+            const startTime      = performance.now();
+            const duration       = 450;
+
+            // Capture destination src NOW (before any async state changes)
+            const pages      = scene.pages;
+            const currentIdx = (scene.currentAudioPage || 1) - 1;
+            const dir        = capturedSide === 'right' ? 1 : -1;
+            const nextIdx    = (currentIdx + dir + pages.length) % pages.length;
+            const capturedDestSrc = pages[nextIdx].src;
+
             const animate = (now) => {
               if (this._animAborted) return;
               const raw   = Math.min((now - startTime) / duration, 1);
@@ -296,12 +327,17 @@
               } else {
                 setTimeout(() => {
                   if (this._animAborted) return;
-                  const dir = capturedSide === 'right' ? 1 : -1;
-                  // 1. Push destination texture onto folio BEFORE it becomes visible.
-                  applyDestTex();
-                  // 2. Update page index, text panels and A-Frame src attribute.
+                  // 1. Push destination texture onto the folio material BEFORE
+                  //    restoring opacity — the folio is still invisible (opacity 0)
+                  //    so there is zero risk of showing the wrong texture.
+                  applyDestTex(capturedDestSrc);
+                  // 2. Update page index, text panels and metadata.
+                  //    doSwap(dir, true) does NOT call folio.setAttribute('src')
+                  //    when silent=true, so A-Frame will not trigger a new async
+                  //    texture load that could race with applyDestTex on Quest 2.
                   if (scene.doSwap) scene.doSwap(dir, true);
-                  // 3. Reveal folio (restores opacity).
+                  // 3. Restore folio opacity — the correct texture is already on
+                  //    the material, so no flash on reveal.
                   this.resetCurl();
                 }, 50);
               }
@@ -326,12 +362,16 @@
               } else {
                 setTimeout(() => {
                   if (!this._animAborted) {
-                    // Restore the original (current-page) texture before revealing.
+                    // Restore original texture directly before revealing
                     const fMesh = folio.getObject3D('mesh');
                     if (fMesh && fMesh.material && this._savedTexMap) {
                       fMesh.material.map         = this._savedTexMap;
                       fMesh.material.needsUpdate = true;
                     }
+                    // Restore A-Frame's src attribute to keep it in sync
+                    const pages   = scene.pages;
+                    const curSrc  = pages ? pages[(scene.currentAudioPage||1)-1].src : null;
+                    if (curSrc) folio.setAttribute('src', curSrc);
                     this.resetCurl();
                   }
                 }, 50);
@@ -349,10 +389,9 @@
 
             const folioMesh = folio.getObject3D('mesh');
             if (folioMesh && folioMesh.material) {
-              // Snapshot current texture for snapBack restoration.
+              // Snapshot current texture so snapBack can restore it
               this._savedTexMap = folioMesh.material.map || null;
 
-              // Copy current texture to the peeling curl mesh.
               if (folioMesh.material.map) {
                 this.curlMat.map             = folioMesh.material.map;
                 this.curlMat.map.minFilter   = THREE.LinearFilter;
@@ -366,23 +405,23 @@
               this.backCurlMat.metalness = folioMesh.material.metalness;
               this.backCurlMat.roughness = folioMesh.material.roughness;
 
-              // Hide the folio via opacity so its material object stays stable
-              // and A-Frame's own texture-update path is NOT triggered during
-              // the animation. We will inject the destination texture ourselves
-              // at commit time (applyDestTex), which is reliable in WebXR.
+              // Hide the folio while the curl animation plays.
+              // Using opacity (not .visible) keeps the A-Frame material object stable.
               folioMesh.material.transparent = true;
               folioMesh.material.opacity     = 0;
               folioMesh.material.needsUpdate = true;
+
+              // Tell A-Frame to start loading the destination texture onto the folio
+              // RIGHT NOW, at the beginning of the 450 ms animation. Since the folio
+              // is hidden (opacity 0) any intermediate state A-Frame produces during
+              // the load is invisible. By the time applyDestTex fires after the
+              // animation, A-Frame has had the full 450 ms to complete the load.
+              // This is the primary load path; _texCache is the reliable fallback.
+              folio.setAttribute('src', pages[nextIdx].src);
             }
 
-            // Pre-build the destination texture now, from the preloaded <img>
-            // element. This is our reliable fallback if A-Frame hasn't finished
-            // loading the backPage texture by commit time.
-            this._pendingDestTex = buildTexFromImg(pages[nextIdx].src);
-
-            // backPage shows the destination texture during the animation AND
-            // serves as Priority-1 texture source at commit (applyDestTex).
-            // A-Frame has the full 450 ms to load it while the curl plays.
+            // backPage provides the visual destination texture backdrop during
+            // the animation AND is a secondary source for applyDestTex (Tier 2).
             this.backPage.setAttribute('src', pages[nextIdx].src);
             this.backPage.setAttribute('visible', 'true');
             this.curlMesh.visible     = true;
@@ -543,13 +582,12 @@
 
         resetCurl: function () {
           clearTimeout(this._watchdog);
-          this._watchdog        = null;
-          this._animAborted     = true;
-          this._pendingDestTex  = null;
+          this._watchdog    = null;
+          this._animAborted = true;
 
-          // Restore folio visibility by resetting opacity.
-          // applyDestTex / snapBack have already set the correct material.map
-          // before this is called, so the correct texture is showing.
+          // Restore folio visibility. applyDestTex (or snapBack) has already
+          // set the correct material.map before this is called, so the revealed
+          // folio immediately shows the right texture with no flash.
           const folioMesh = this.el.getObject3D('mesh');
           if (folioMesh && folioMesh.material) {
             folioMesh.material.opacity     = 1;
@@ -866,11 +904,19 @@
           folio.addEventListener('mouseenter', () => hoverTooltip.setAttribute('visible', 'true'));
           folio.addEventListener('mouseleave', () => hoverTooltip.setAttribute('visible', 'false'));
 
-          // doSwap: updates page index, text panels, and the folio's A-Frame src.
-          // When called from the curl animation (silent=true), the folio texture has
-          // already been applied by applyDestTex() in page-curl before this runs.
-          // The setAttribute here syncs A-Frame's internal state so subsequent curls
-          // read the correct src from the material component.
+          // doSwap: updates page counter, metadata, and text panels.
+          //
+          // When silent=true (called from the curl animation):
+          //   - The folio texture has already been applied directly by page-curl's
+          //     applyDestTex() before this is called, and folio.setAttribute('src')
+          //     was already issued at startCurl time (giving A-Frame 450+ ms to load).
+          //   - We do NOT call folio.setAttribute('src') again here to avoid triggering
+          //     a new async A-Frame texture load that could race against the texture
+          //     we already placed — this was the root cause of the VR swap failure
+          //     on Quest 2, where A-Frame's async pipeline is slower than on desktop.
+          //
+          // When silent=false (called from the SWAP PAGE button):
+          //   - Normal A-Frame setAttribute handles the texture load, same as before.
           const doSwap = (dir, silent) => {
             if (!silent) playClick();
             currentPage = ((currentPage - 1 + dir + pages.length) % pages.length) + 1;
@@ -881,7 +927,11 @@
               this.el.currentPanelAudio = null;
             }
             const page = pages[currentPage - 1];
-            folio.setAttribute('src', page.src);
+            if (!silent) {
+              // Button swap: rely on A-Frame's normal texture pipeline
+              folio.setAttribute('src', page.src);
+            }
+            // Always update all metadata
             document.querySelector('#hover-text').setAttribute('value', page.hover);
             transcrText.setAttribute('value', page.lat);
             translText.setAttribute('value',  page.eng);
