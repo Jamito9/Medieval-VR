@@ -154,8 +154,8 @@
           this._animAborted     = false;
           this._watchdog        = null;
           this._mouseX          = 0;
-          // Saved texture map used to restore folio on snapBack
           this._savedTexMap     = null;
+          this._pendingDestTex  = null;
 
           this._trackMouse = (e) => { this._mouseX = e.clientX; };
           window.addEventListener('mousemove', this._trackMouse);
@@ -208,8 +208,6 @@
           this.shadowMesh.visible    = false;
           folio.object3D.add(this.shadowMesh);
 
-          // backPage: visual backdrop showing destination texture during animation.
-          // Also used as a texture-source fallback when injecting into the folio.
           this.backPage = document.createElement('a-plane');
           this.backPage.setAttribute('width',    '1.1');
           this.backPage.setAttribute('height',   '0.8');
@@ -240,60 +238,51 @@
             if (audio) { audio.currentTime = 0; audio.play().catch(() => {}); }
           };
 
+          // Build a Three.js texture directly from a preloaded <img> element.
+          // This is reliable in both desktop and WebXR because it bypasses
+          // A-Frame's async material update pipeline entirely.
+          const buildTexFromImg = (assetSelector) => {
+            const imgEl = document.querySelector(assetSelector);
+            if (!imgEl || !imgEl.complete || imgEl.naturalWidth === 0) return null;
+            const tex = new THREE.Texture(imgEl);
+            tex.flipY           = true;
+            tex.minFilter       = THREE.LinearMipmapLinearFilter;
+            tex.generateMipmaps = true;
+            if (THREE.sRGBEncoding !== undefined) tex.encoding = THREE.sRGBEncoding;
+            try {
+              const r = folio.sceneEl.renderer;
+              if (r) tex.anisotropy = Math.min(16, r.capabilities.getMaxAnisotropy());
+            } catch (e) {}
+            tex.needsUpdate = true;
+            return tex;
+          };
+
           const easeInOut = (t) => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
           const easeOut   = (t) => 1 - (1-t)*(1-t);
 
-          // ── _injectDestTex ───────────────────────────────────────────────
-          // Three-layer texture injection used at curl-commit time.
-          // Layer 1: folio.setAttribute was called at startCurl — A-Frame may
-          //          already have applied it (works on PC and fast VR frames).
-          // Layer 2: backPage copy — the backPage had the full animation
-          //          duration (450 ms) to receive the texture via A-Frame.
-          // Layer 3: raw THREE.Texture from the preloaded <img> element —
-          //          guaranteed to work if the asset is in <a-assets>.
-          const _injectDestTex = (destSrc) => {
+          // Apply the destination texture to the folio mesh just before revealing it.
+          // Priority 1 — backPage mesh: A-Frame had the full animation duration to load
+          //   this texture and it is rendered visibly throughout, so it is guaranteed
+          //   to be on the GPU in both desktop and WebXR.
+          // Priority 2 — pendingDestTex: a Three.js texture built directly from the
+          //   preloaded <img> element at startCurl time. No A-Frame involvement.
+          const applyDestTex = () => {
             const fMesh = folio.getObject3D('mesh');
             if (!fMesh || !fMesh.material) return;
-
-            // Layer 1: folio already updated by A-Frame (check map changed)
-            if (fMesh.material.map && fMesh.material.map !== this._savedTexMap) return;
-
-            // Layer 2: backPage mesh copy
             const bpMesh = this.backPage.getObject3D('mesh');
-            if (bpMesh && bpMesh.material && bpMesh.material.map &&
-                bpMesh.material.map !== this._savedTexMap) {
-              fMesh.material.map         = bpMesh.material.map;
-              fMesh.material.needsUpdate = true;
-              return;
-            }
-
-            // Layer 3: build texture directly from preloaded <img> element
-            const imgEl = document.querySelector(destSrc);
-            if (imgEl && imgEl.complete && imgEl.naturalWidth > 0) {
-              const tex = new THREE.Texture(imgEl);
-              tex.flipY           = true;
-              tex.encoding        = THREE.sRGBEncoding;
-              tex.minFilter       = THREE.LinearMipmapLinearFilter;
-              tex.generateMipmaps = true;
-              try {
-                const r = folio.sceneEl.renderer;
-                if (r) tex.anisotropy = Math.min(16, r.capabilities.getMaxAnisotropy());
-              } catch (e) {}
-              tex.needsUpdate        = true;
+            const tex    = (bpMesh && bpMesh.material && bpMesh.material.map)
+                        || this._pendingDestTex;
+            if (tex) {
               fMesh.material.map         = tex;
               fMesh.material.needsUpdate = true;
             }
           };
 
-          // ── completeCurl ─────────────────────────────────────────────────
           this._completeCurl = () => {
             playPageTurn();
             this.activeController = null;
             const startProg    = this.peelProgress;
             const capturedSide = this.curlSide;
-            const capturedDest = scene.pages
-              ? scene.pages[((scene.currentAudioPage||1) - 1 + (capturedSide === 'right' ? 1 : -1) + scene.pages.length) % scene.pages.length].src
-              : null;
             const startTime    = performance.now();
             const duration     = 450;
             const animate = (now) => {
@@ -308,9 +297,11 @@
                 setTimeout(() => {
                   if (this._animAborted) return;
                   const dir = capturedSide === 'right' ? 1 : -1;
-                  // Inject destination texture into folio before revealing it
-                  if (capturedDest) _injectDestTex(capturedDest);
+                  // 1. Push destination texture onto folio BEFORE it becomes visible.
+                  applyDestTex();
+                  // 2. Update page index, text panels and A-Frame src attribute.
                   if (scene.doSwap) scene.doSwap(dir, true);
+                  // 3. Reveal folio (restores opacity).
                   this.resetCurl();
                 }, 50);
               }
@@ -318,7 +309,6 @@
             requestAnimationFrame(animate);
           };
 
-          // ── snapBack ─────────────────────────────────────────────────────
           this._snapBack = () => {
             this.activeController = null;
             const startProg    = this.peelProgress;
@@ -336,16 +326,12 @@
               } else {
                 setTimeout(() => {
                   if (!this._animAborted) {
-                    // Restore folio to the current (unturned) page texture
+                    // Restore the original (current-page) texture before revealing.
                     const fMesh = folio.getObject3D('mesh');
                     if (fMesh && fMesh.material && this._savedTexMap) {
                       fMesh.material.map         = this._savedTexMap;
                       fMesh.material.needsUpdate = true;
                     }
-                    // Re-sync A-Frame src attribute to match
-                    const pages  = scene.pages;
-                    const curSrc = pages ? pages[(scene.currentAudioPage||1)-1].src : null;
-                    if (curSrc) folio.setAttribute('src', curSrc);
                     this.resetCurl();
                   }
                 }, 50);
@@ -354,7 +340,6 @@
             requestAnimationFrame(animate);
           };
 
-          // ── startCurl ────────────────────────────────────────────────────
           const startCurl = (side, controllerEl) => {
             if (this.isCurling) return;
             const pages      = scene.pages;
@@ -364,9 +349,10 @@
 
             const folioMesh = folio.getObject3D('mesh');
             if (folioMesh && folioMesh.material) {
-              // Snapshot current texture for snapBack restoration
+              // Snapshot current texture for snapBack restoration.
               this._savedTexMap = folioMesh.material.map || null;
 
+              // Copy current texture to the peeling curl mesh.
               if (folioMesh.material.map) {
                 this.curlMat.map             = folioMesh.material.map;
                 this.curlMat.map.minFilter   = THREE.LinearFilter;
@@ -380,19 +366,23 @@
               this.backCurlMat.metalness = folioMesh.material.metalness;
               this.backCurlMat.roughness = folioMesh.material.roughness;
 
-              // Hide the folio mesh via .visible so A-Frame material updates
-              // (triggered below) still apply correctly to the material object.
-              // Using .visible rather than opacity means A-Frame cannot
-              // accidentally undo the hide by recreating/resetting the material.
-              folioMesh.visible = false;
-
-              // Tell A-Frame to start loading the destination texture onto the
-              // folio now — it has the full 450 ms animation to complete this.
-              folio.setAttribute('src', pages[nextIdx].src);
+              // Hide the folio via opacity so its material object stays stable
+              // and A-Frame's own texture-update path is NOT triggered during
+              // the animation. We will inject the destination texture ourselves
+              // at commit time (applyDestTex), which is reliable in WebXR.
+              folioMesh.material.transparent = true;
+              folioMesh.material.opacity     = 0;
+              folioMesh.material.needsUpdate = true;
             }
 
-            // backPage also receives the destination src as a visual backdrop
-            // and as a secondary texture source for _injectDestTex Layer 2.
+            // Pre-build the destination texture now, from the preloaded <img>
+            // element. This is our reliable fallback if A-Frame hasn't finished
+            // loading the backPage texture by commit time.
+            this._pendingDestTex = buildTexFromImg(pages[nextIdx].src);
+
+            // backPage shows the destination texture during the animation AND
+            // serves as Priority-1 texture source at commit (applyDestTex).
+            // A-Frame has the full 450 ms to load it while the curl plays.
             this.backPage.setAttribute('src', pages[nextIdx].src);
             this.backPage.setAttribute('visible', 'true');
             this.curlMesh.visible     = true;
@@ -415,7 +405,6 @@
             this._watchdog = setTimeout(() => { if (this.isCurling) { this.resetCurl(); } }, 3500);
           };
 
-          // Desktop mouse handlers
           this._onMouseMoveCurl = (e) => {
             if (!this.isCurling || this.isVR) return;
             const dx          = this.startMouseX - e.clientX;
@@ -456,7 +445,6 @@
               return hs && hs.targetedPanel !== null;
             };
 
-            // Synchronous raycaster walk — no CSS-class race condition
             const isAudioHovered = () => {
               const ctrls = [rightCtrl, leftCtrl];
               for (const ctrl of ctrls) {
@@ -555,15 +543,18 @@
 
         resetCurl: function () {
           clearTimeout(this._watchdog);
-          this._watchdog    = null;
-          this._animAborted = true;
+          this._watchdog        = null;
+          this._animAborted     = true;
+          this._pendingDestTex  = null;
 
+          // Restore folio visibility by resetting opacity.
+          // applyDestTex / snapBack have already set the correct material.map
+          // before this is called, so the correct texture is showing.
           const folioMesh = this.el.getObject3D('mesh');
-          if (folioMesh) {
-            // Reveal the folio by restoring .visible — this pairs with the
-            // folioMesh.visible = false set in startCurl. It is unaffected
-            // by any A-Frame material recreations that may have occurred.
-            folioMesh.visible = true;
+          if (folioMesh && folioMesh.material) {
+            folioMesh.material.opacity     = 1;
+            folioMesh.material.transparent = false;
+            folioMesh.material.needsUpdate = true;
           }
 
           this.curlMesh.visible     = false;
@@ -875,6 +866,11 @@
           folio.addEventListener('mouseenter', () => hoverTooltip.setAttribute('visible', 'true'));
           folio.addEventListener('mouseleave', () => hoverTooltip.setAttribute('visible', 'false'));
 
+          // doSwap: updates page index, text panels, and the folio's A-Frame src.
+          // When called from the curl animation (silent=true), the folio texture has
+          // already been applied by applyDestTex() in page-curl before this runs.
+          // The setAttribute here syncs A-Frame's internal state so subsequent curls
+          // read the correct src from the material component.
           const doSwap = (dir, silent) => {
             if (!silent) playClick();
             currentPage = ((currentPage - 1 + dir + pages.length) % pages.length) + 1;
