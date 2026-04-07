@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <title>Medieval Scriptorium – Test Cockpit Build</title>
     <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
-    <script src="https://unpkg.com/aframe-environment-component@1.3.3/dist/aframe-environment-component.min.js"></script>
+    <script src="https://unpkg.com/[email protected]/dist/aframe-environment-component.min.js"></script>
     <script>
 
       AFRAME.registerComponent('look-at-user', {
@@ -722,7 +722,7 @@
           scene.addEventListener('enter-vr', () => { this.isVR = true;  });
           scene.addEventListener('exit-vr',  () => { this.isVR = false; });
 
-          const makeHotspot = (cx, cy, panelPos, labelText) => {
+          const makeHotspot = (cx, cy, panelPos, labelText, page) => {
             const panel = document.createElement('a-entity');
             panel.setAttribute('position', panelPos);
             panel.setAttribute('visible', 'false');
@@ -736,15 +736,19 @@
             txt.setAttribute('position', '0 0 0.01');
             panel.appendChild(txt);
             folio.appendChild(panel);
-            this.zones.push({ cx, cy, halfW: 0.125, halfH: 0.10, panel, panelOpen: false });
+            this.zones.push({ cx, cy, halfW: 0.125, halfH: 0.10, panel, panelOpen: false, page });
           };
 
-          makeHotspot( 0.24, -0.02,  '0.24 0.17 0.06', 'Info. test one');
-          makeHotspot(-0.24, -0.02, '-0.24 0.17 0.06', 'Info. test two');
+          // Folio 1 hotspots
+          makeHotspot( 0.24, -0.02,  '0.24 0.17 0.06', 'Test info. box 1', 1);
+          makeHotspot(-0.24, -0.02, '-0.24 0.17 0.06', 'Test info. box 2', 1);
+          // Folio 2 hotspots
+          makeHotspot( 0.24, -0.02,  '0.24 0.17 0.06', 'Test info. box 3', 2);
+          makeHotspot(-0.24, -0.02, '-0.24 0.17 0.06', 'Test info. box 4', 2);
 
           const toggle = () => {
             if (!this.targetedPanel) return;
-            const zone = this.zones.find(z => z.panel === this.targetedPanel);
+            const zone = this.zones.find(z => z.panel === this.targetedPanel && z.page === (scene.currentAudioPage || 1));
             if (!zone) return;
             zone.panelOpen = !zone.panelOpen;
             zone.panel.setAttribute('visible', zone.panelOpen);
@@ -773,6 +777,7 @@
             folio.object3D.worldToLocal(this._localPt);
             for (let i = 0; i < this.zones.length; i++) {
               const z = this.zones[i];
+              if (z.page !== (this.el.sceneEl.currentAudioPage || 1)) continue;
               if (Math.abs(this._localPt.x-z.cx) <= z.halfW && Math.abs(this._localPt.y-z.cy) <= z.halfH) {
                 hitZoneIdx = i; break;
               }
@@ -788,6 +793,7 @@
                 folio.object3D.worldToLocal(this._localPt);
                 for (let i = 0; i < this.zones.length; i++) {
                   const z = this.zones[i];
+                  if (z.page !== (this.el.sceneEl.currentAudioPage || 1)) continue;
                   if (Math.abs(this._localPt.x-z.cx) <= z.halfW && Math.abs(this._localPt.y-z.cy) <= z.halfH) {
                     hitZoneIdx = i; break;
                   }
@@ -851,8 +857,10 @@
           const infoPanel    = document.querySelector('#info-panel');
           const soundEl      = document.querySelector('#ambient-sound');
           const clickSoundEl = document.querySelector('#click-sound');
-          const transcrText  = document.querySelector('#transcr-text');
-          const translText   = document.querySelector('#transl-text');
+          const transcrText     = document.querySelector('#transcr-text');
+          const translText      = document.querySelector('#transl-text');
+          const infoRightText   = document.querySelector('#info-right-text');
+          const infoRightHeader = document.querySelector('#info-right-header');
           const muteBtn      = document.querySelector('#mute-button');
           const muteLabel    = document.querySelector('#mute-label');
           const hoverTooltip = document.querySelector('#hover-tooltip');
@@ -887,19 +895,23 @@
               src: '#manuscript1', lat: lat1, eng: eng1,
               title: 'Liber Chronicarum, 1493,\nHartmann Schedel',
               hover: 'Liber Chronicarum',
-              latinSrc: '#latin1-track', englishSrc: '#english1-track'
+              latinSrc: '#latin1-track', englishSrc: '#english1-track',
+              infoRight: 'Information about the Liber Chronicarum'
             },
             {
               src: '#manuscript2', lat: lat2, eng: eng2,
               title: 'Liber Pluscardensis,\nbefore 1500',
               hover: 'Liber Pluscardensis',
-              latinSrc: '#latin2-track', englishSrc: '#english2-track'
+              latinSrc: '#latin2-track', englishSrc: '#english2-track',
+              infoRight: 'Information about the Liber Pluscardensis'
             }
           ];
 
           this.el.pages = pages;
           transcrText.setAttribute('value', pages[0].lat);
           translText.setAttribute('value',  pages[0].eng);
+          infoRightText.setAttribute('value', pages[0].infoRight);
+          infoRightHeader.setAttribute('value', 'Test 1');
 
           folio.addEventListener('mouseenter', () => hoverTooltip.setAttribute('visible', 'true'));
           folio.addEventListener('mouseleave', () => hoverTooltip.setAttribute('visible', 'false'));
@@ -935,6 +947,8 @@
             document.querySelector('#hover-text').setAttribute('value', page.hover);
             transcrText.setAttribute('value', page.lat);
             translText.setAttribute('value',  page.eng);
+            infoRightText.setAttribute('value', page.infoRight);
+            infoRightHeader.setAttribute('value', currentPage === 1 ? 'Test 1' : 'Test 2');
             document.querySelector('#info-text').setAttribute('value', page.title);
           };
 
@@ -1114,6 +1128,15 @@
           <a-plane width="1.2" height="1.8" color="#111" opacity="0.9" material="side: double;"></a-plane>
           <a-text value="LATIN TRANSCRIPTION" color="#FFD700" align="center" width="1.1" position="0 0.8 0.02"></a-text>
           <a-text id="transcr-text" color="white" align="center" baseline="top"
+                  width="1.05" position="0 0.6 0.02" wrap-count="50"></a-text>
+      </a-entity>
+
+      <a-entity id="info-right-panel"
+                position="2.1 1.5 -0.4" look-at-user>
+          <a-plane width="1.2" height="1.8" color="#111" opacity="0.9" material="side: double;"></a-plane>
+          <a-text id="info-right-header" value="Test 1" color="#FFD700" align="center"
+                  width="1.1" position="0 0.8 0.02"></a-text>
+          <a-text id="info-right-text" color="white" align="center" baseline="top"
                   width="1.05" position="0 0.6 0.02" wrap-count="50"></a-text>
       </a-entity>
 
