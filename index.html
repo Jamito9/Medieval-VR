@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <title>Medieval Scriptorium – Test Cockpit Build</title>
     <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
-    <script src="https://unpkg.com/aframe-environment-component@1.3.3/dist/aframe-environment-component.min.js"></script>
+   <script src="https://unpkg.com/aframe-environment-component@1.3.3/dist/aframe-environment-component.min.js"></script>
     <script>
 
       AFRAME.registerComponent('look-at-user', {
@@ -368,10 +368,8 @@
                       fMesh.material.map         = this._savedTexMap;
                       fMesh.material.needsUpdate = true;
                     }
-                    // Restore A-Frame's src attribute to keep it in sync
-                    const pages   = scene.pages;
-                    const curSrc  = pages ? pages[(scene.currentAudioPage||1)-1].src : null;
-                    if (curSrc) folio.setAttribute('src', curSrc);
+                    // Texture is restored via _savedTexMap (Three.js direct).
+                        // No folio.setAttribute('src') — avoids A-Frame async race on Quest 2.
                     this.resetCurl();
                   }
                 }, 50);
@@ -411,13 +409,11 @@
               folioMesh.material.opacity     = 0;
               folioMesh.material.needsUpdate = true;
 
-              // Tell A-Frame to start loading the destination texture onto the folio
-              // RIGHT NOW, at the beginning of the 450 ms animation. Since the folio
-              // is hidden (opacity 0) any intermediate state A-Frame produces during
-              // the load is invisible. By the time applyDestTex fires after the
-              // animation, A-Frame has had the full 450 ms to complete the load.
-              // This is the primary load path; _texCache is the reliable fallback.
-              folio.setAttribute('src', pages[nextIdx].src);
+              // Texture is applied at commit time via applyDestTex() which uses
+              // _texCache (THREE.TextureLoader preloaded at scene startup).
+              // We do NOT call folio.setAttribute('src') here: that triggers
+              // A-Frame's async material pipeline which races with Three.js on
+              // Quest 2, causing delayed callbacks to overwrite the correct texture.
             }
 
             // backPage provides the visual destination texture backdrop during
@@ -919,16 +915,12 @@
           // doSwap: updates page counter, metadata, and text panels.
           //
           // When silent=true (called from the curl animation):
-          //   - The folio texture has already been applied directly by page-curl's
-          //     applyDestTex() before this is called, and folio.setAttribute('src')
-          //     was already issued at startCurl time (giving A-Frame 450+ ms to load).
-          //   - We do NOT call folio.setAttribute('src') again here to avoid triggering
-          //     a new async A-Frame texture load that could race against the texture
-          //     we already placed — this was the root cause of the VR swap failure
-          //     on Quest 2, where A-Frame's async pipeline is slower than on desktop.
-          //
-          // When silent=false (called from the SWAP PAGE button):
-          //   - Normal A-Frame setAttribute handles the texture load, same as before.
+            //   Texture was already applied by applyDestTex() via _texCache.
+            //   folio.setAttribute('src') is NOT called in the curl path —
+            //   this eliminates the A-Frame async race condition on Quest 2.
+            //
+            // When silent=false (called from the SWAP PAGE button):
+            //   Normal A-Frame setAttribute handles the texture load, same as before.
           const doSwap = (dir, silent) => {
             if (!silent) playClick();
             // Close all open hotspot panels before the swap so no stale
@@ -1120,7 +1112,7 @@
       </a-entity>
 
       <a-entity id="translation-panel"
-                position="-1.5.1 1.5 -0.6" look-at-user
+                position="-1.6 1.5 -0.6" look-at-user
                 panel-audio="type: english">
           <a-plane width="1.2" height="1.8" color="#111" opacity="0.9" material="side: double;"></a-plane>
           <a-text value="ENGLISH TRANSLATION" color="#FFD700" align="center" width="1.1" position="0 0.8 0.02"></a-text>
