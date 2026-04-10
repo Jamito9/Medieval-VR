@@ -418,8 +418,22 @@
 
             // backPage provides the visual destination texture backdrop during
             // the animation AND is a secondary source for applyDestTex (Tier 2).
-            this.backPage.setAttribute('src', pages[nextIdx].src);
+            const _bpDestSrc = pages[nextIdx].src;
+            this.backPage.setAttribute('src', _bpDestSrc);
             this.backPage.setAttribute('visible', 'true');
+            // Quest 2 WebXR: setAttribute('src') is async — the texture will not be on
+            // backPage.material.map in time for the first rendered frame of the curl.
+            // Push the pre-cached texture onto the Three.js material immediately, and
+            // again on the next frame in case the mesh was not yet initialised this frame.
+            const _applyBPTex = () => {
+              const bpMesh = this.backPage.getObject3D('mesh');
+              if (bpMesh && bpMesh.material && this._texCache[_bpDestSrc]) {
+                bpMesh.material.map = this._texCache[_bpDestSrc];
+                bpMesh.material.needsUpdate = true;
+              }
+            };
+            _applyBPTex();
+            requestAnimationFrame(_applyBPTex);
             this.curlMesh.visible     = true;
             this.backCurlMesh.visible = true;
             this.shadowMesh.visible   = true;
@@ -1140,5 +1154,4 @@
 
     </a-scene>
 
-  </body>
 </html>
