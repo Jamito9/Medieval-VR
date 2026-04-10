@@ -339,6 +339,23 @@
                   // 3. Restore folio opacity — the correct texture is already on
                   //    the material, so no flash on reveal.
                   this.resetCurl();
+                  // 4. Re-apply on the next frame as a hard guarantee.
+                  //    resetCurl() sets transparent=false + needsUpdate=true, which
+                  //    triggers a Three.js shader recompile on Quest 2's WebXR
+                  //    renderer. During that recompile A-Frame re-asserts its
+                  //    internally cached material state (src: '#manuscript1'),
+                  //    silently overwriting applyDestTex's map assignment.
+                  //    Scheduling a rAF here fires AFTER that recompile path and
+                  //    re-stamps the correct texture as the last write before render.
+                  //    resetCurl() sets _animAborted=true so we capture src locally.
+                  const _rAFSrc = capturedDestSrc;
+                  requestAnimationFrame(() => {
+                    const fm = folio.getObject3D('mesh');
+                    if (fm && fm.material && this._texCache[_rAFSrc]) {
+                      fm.material.map        = this._texCache[_rAFSrc];
+                      fm.material.needsUpdate = true;
+                    }
+                  });
                 }, 50);
               }
             };
