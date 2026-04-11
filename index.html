@@ -151,10 +151,11 @@
           this.isVR             = false;
           this._ctrlPos         = new THREE.Vector3();
           this.R                = 0.04;
-          this._animAborted     = false;
-          this._watchdog        = null;
-          this._mouseX          = 0;
-          this._savedTexMap     = null;
+          this._animAborted       = false;
+          this._watchdog          = null;
+          this._mouseX            = 0;
+          this._savedTexMap       = null;
+          this._skipFirstCurlTick = false;
 
           // Texture cache: populated at scene load via THREE.TextureLoader.
           // Key = asset selector string e.g. '#manuscript1'.
@@ -339,15 +340,22 @@
                   // 3. Restore folio opacity — the correct texture is already on
                   //    the material, so no flash on reveal.
                   this.resetCurl();
-                  // 4. Re-apply on the next frame as a hard guarantee.
-                  //    resetCurl() sets transparent=false + needsUpdate=true, which
-                  //    triggers a Three.js shader recompile on Quest 2's WebXR
-                  //    renderer. During that recompile A-Frame re-asserts its
-                  //    internally cached material state (src: '#manuscript1'),
-                  //    silently overwriting applyDestTex's map assignment.
-                  //    Scheduling a rAF here fires AFTER that recompile path and
-                  //    re-stamps the correct texture as the last write before render.
-                  //    resetCurl() sets _animAborted=true so we capture src locally.
+                  // 4. Sync A-Frame's material component to the new page src.
+                  //    Root cause of folio-not-swapping in VR: A-Frame's material
+                  //    component caches src='#manuscript1' internally. Any subsequent
+                  //    A-Frame material update (e.g. triggered by setAttribute on a
+                  //    related entity, or by the component system's own flush) will
+                  //    re-assert that cached src, overwriting applyDestTex's Three.js
+                  //    direct map assignment. Calling folio.setAttribute('src', ...) here
+                  //    updates A-Frame's internal data.src to the destination page so
+                  //    every future A-Frame material assertion uses the correct texture.
+                  //    This is safe because the folio is already fully visible with the
+                  //    correct texture from applyDestTex above; A-Frame's async callback
+                  //    loads from browser cache (near-instant) and lands on the same image.
+                  folio.setAttribute('src', capturedDestSrc);
+                  // 5. Belt-and-suspenders: re-stamp _texCache texture one frame later.
+                  //    Covers any remaining edge-case where A-Frame's pipeline fires
+                  //    between steps 3 and 4 above.
                   const _rAFSrc = capturedDestSrc;
                   requestAnimationFrame(() => {
                     const fm = folio.getObject3D('mesh');
@@ -455,6 +463,7 @@
             this.backCurlMesh.visible = true;
             this.shadowMesh.visible   = true;
             this._animAborted         = false;
+            this._skipFirstCurlTick   = true;
             this.isCurling            = true;
             this.curlSide             = side;
             this.peelProgress         = 0;
@@ -528,10 +537,21 @@
               return false;
             };
 
+            // Curl must only fire when the controller laser is actually
+            // intersecting the folio — pressing A while pointing at empty space
+            // or at a non-folio entity must not start a curl (or play the sound).
+            const isFolioTargeted = (ctrl) => {
+              if (!ctrl) return false;
+              const rc = ctrl.components && ctrl.components.raycaster;
+              if (!rc || !rc.intersectedEls) return false;
+              return rc.intersectedEls.indexOf(folio) >= 0;
+            };
+
             if (rightCtrl) {
               rightCtrl.addEventListener('abuttondown', () => {
                 if (!this.isVR || this.isCurling) return;
                 if (isHotspotTargeted() || isAudioHovered()) return;
+                if (!isFolioTargeted(rightCtrl)) return;
                 startCurl('right', rightCtrl);
               });
               rightCtrl.addEventListener('abuttonup', () => {
@@ -543,6 +563,7 @@
               leftCtrl.addEventListener('xbuttondown', () => {
                 if (!this.isVR || this.isCurling) return;
                 if (isHotspotTargeted() || isAudioHovered()) return;
+                if (!isFolioTargeted(leftCtrl)) return;
                 startCurl('left', leftCtrl);
               });
               leftCtrl.addEventListener('xbuttonup', () => {
@@ -650,7 +671,14 @@
           if (!tc || !tc.controller || !tc.controller.gamepad) return;
           const gp  = tc.controller.gamepad;
           const btn = gp.buttons[4];
-          if (btn && !btn.pressed) {
+          if (this._skipFirstCurlTick) {
+            // Skip button check on the first tick after startCurl.
+            // On Quest 2 the gamepad state may not yet reflect the button
+            // being held on the same frame as abuttondown, causing tick to
+            // see !btn.pressed and immediately fire _completeCurl (and the
+            // page turn sound) on the press frame rather than the release frame.
+            this._skipFirstCurlTick = false;
+          } else if (btn && !btn.pressed) {
             this.activeController = null;
             this._completeCurl();
             return;
