@@ -328,46 +328,45 @@
               } else {
                 setTimeout(() => {
                   if (this._animAborted) return;
-                  // 1. Push destination texture onto the folio material BEFORE
-                  //    restoring opacity — the folio is still invisible (opacity 0)
-                  //    so there is zero risk of showing the wrong texture.
-                  applyDestTex(capturedDestSrc);
-                  // 2. Update page index, text panels and metadata.
-                  //    doSwap(dir, true) does NOT call folio.setAttribute('src')
-                  //    when silent=true, so A-Frame will not trigger a new async
-                  //    texture load that could race with applyDestTex on Quest 2.
+
+                  // 1. Update page index, text panels and metadata FIRST so UI
+                  //    state is consistent before the texture changes.
                   if (scene.doSwap) scene.doSwap(dir, true);
-                  // 3. Restore folio opacity — the correct texture is already on
-                  //    the material, so no flash on reveal.
-                  this.resetCurl();
-                  // 4. Silently sync A-Frame's internal material component state.
-                  //    We deliberately do NOT call folio.setAttribute('src', ...) here.
-                  //    That call re-enters A-Frame's async texture pipeline, which on
-                  //    Quest 2 WebXR either creates a new material object (discarding
-                  //    applyDestTex's assignment) or races its async load callback
-                  //    against our direct Three.js write — the exact problem the
-                  //    original silent-swap design was built to avoid.
-                  //    Instead, we write directly to the component's data and attrValue
-                  //    objects so A-Frame's internal src reference is correct for any
-                  //    future folio.setAttribute call (e.g. from the swap button),
-                  //    without triggering update() or any texture load now.
-                  const _matComp = folio.components && folio.components.material;
-                  if (_matComp) {
-                    if (_matComp.data)      _matComp.data.src      = capturedDestSrc;
-                    if (_matComp.attrValue) _matComp.attrValue.src = capturedDestSrc;
-                  }
-                  // 5. Re-stamp the cached texture on the next two frames.
-                  //    Frame N+1 catches any residual A-Frame material flush that may
-                  //    run after the current call stack. Frame N+2 is a final safeguard.
-                  const _rAFSrc = capturedDestSrc;
-                  const _restamp = () => {
-                    const fm = folio.getObject3D('mesh');
-                    if (fm && fm.material && this._texCache[_rAFSrc]) {
-                      fm.material.map        = this._texCache[_rAFSrc];
-                      fm.material.needsUpdate = true;
-                    }
+
+                  // 2. Hand full texture ownership to A-Frame's own pipeline.
+                  //
+                  //    Every previous approach wrote directly to Three.js
+                  //    material.map and fought A-Frame's material component
+                  //    which holds its own texture reference and re-asserts it
+                  //    via the XR session's rAF queue (separate from
+                  //    window.rAF on Quest 2), always winning the last write.
+                  //
+                  //    The correct fix: let A-Frame set the texture itself.
+                  //    The folio is still invisible (opacity 0) so there is
+                  //    zero flicker risk while the load completes.
+                  //    A-Frame resolves '#manuscriptN' through <a-assets>, which
+                  //    are pre-loaded — THREE.Cache is warm — so the load
+                  //    callback fires near-instantly and 'material-texture-loaded'
+                  //    is emitted on the folio element.
+                  //    We listen for that event and only THEN call resetCurl()
+                  //    to reveal the folio. A-Frame owns the texture state
+                  //    completely and cannot race against itself.
+                  const onTexLoaded = () => {
+                    folio.removeEventListener('material-texture-loaded', onTexLoaded);
+                    clearTimeout(texFallback);
+                    if (this.isCurling) this.resetCurl();
                   };
-                  requestAnimationFrame(() => { _restamp(); requestAnimationFrame(_restamp); });
+                  folio.addEventListener('material-texture-loaded', onTexLoaded);
+                  folio.setAttribute('src', capturedDestSrc);
+
+                  // Safety fallback: if 'material-texture-loaded' never fires
+                  // (e.g. capturedDestSrc was already the current src and
+                  // A-Frame skips reloading it), reveal the folio after 300 ms.
+                  const texFallback = setTimeout(() => {
+                    folio.removeEventListener('material-texture-loaded', onTexLoaded);
+                    if (this.isCurling) this.resetCurl();
+                  }, 300);
+
                 }, 50);
               }
             };
