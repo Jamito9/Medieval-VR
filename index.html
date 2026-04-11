@@ -340,30 +340,34 @@
                   // 3. Restore folio opacity — the correct texture is already on
                   //    the material, so no flash on reveal.
                   this.resetCurl();
-                  // 4. Sync A-Frame's material component to the new page src.
-                  //    Root cause of folio-not-swapping in VR: A-Frame's material
-                  //    component caches src='#manuscript1' internally. Any subsequent
-                  //    A-Frame material update (e.g. triggered by setAttribute on a
-                  //    related entity, or by the component system's own flush) will
-                  //    re-assert that cached src, overwriting applyDestTex's Three.js
-                  //    direct map assignment. Calling folio.setAttribute('src', ...) here
-                  //    updates A-Frame's internal data.src to the destination page so
-                  //    every future A-Frame material assertion uses the correct texture.
-                  //    This is safe because the folio is already fully visible with the
-                  //    correct texture from applyDestTex above; A-Frame's async callback
-                  //    loads from browser cache (near-instant) and lands on the same image.
-                  folio.setAttribute('src', capturedDestSrc);
-                  // 5. Belt-and-suspenders: re-stamp _texCache texture one frame later.
-                  //    Covers any remaining edge-case where A-Frame's pipeline fires
-                  //    between steps 3 and 4 above.
+                  // 4. Silently sync A-Frame's internal material component state.
+                  //    We deliberately do NOT call folio.setAttribute('src', ...) here.
+                  //    That call re-enters A-Frame's async texture pipeline, which on
+                  //    Quest 2 WebXR either creates a new material object (discarding
+                  //    applyDestTex's assignment) or races its async load callback
+                  //    against our direct Three.js write — the exact problem the
+                  //    original silent-swap design was built to avoid.
+                  //    Instead, we write directly to the component's data and attrValue
+                  //    objects so A-Frame's internal src reference is correct for any
+                  //    future folio.setAttribute call (e.g. from the swap button),
+                  //    without triggering update() or any texture load now.
+                  const _matComp = folio.components && folio.components.material;
+                  if (_matComp) {
+                    if (_matComp.data)      _matComp.data.src      = capturedDestSrc;
+                    if (_matComp.attrValue) _matComp.attrValue.src = capturedDestSrc;
+                  }
+                  // 5. Re-stamp the cached texture on the next two frames.
+                  //    Frame N+1 catches any residual A-Frame material flush that may
+                  //    run after the current call stack. Frame N+2 is a final safeguard.
                   const _rAFSrc = capturedDestSrc;
-                  requestAnimationFrame(() => {
+                  const _restamp = () => {
                     const fm = folio.getObject3D('mesh');
                     if (fm && fm.material && this._texCache[_rAFSrc]) {
                       fm.material.map        = this._texCache[_rAFSrc];
                       fm.material.needsUpdate = true;
                     }
-                  });
+                  };
+                  requestAnimationFrame(() => { _restamp(); requestAnimationFrame(_restamp); });
                 }, 50);
               }
             };
@@ -556,7 +560,10 @@
               });
               rightCtrl.addEventListener('abuttonup', () => {
                 if (!this.isCurling || !this.isVR || !this.activeController) return;
-                this._completeCurl();
+                // Mirror desktop mouseup: only complete if peel has meaningful
+                // progress; otherwise snap back. This prevents the page-turn sound
+                // firing on any brief A press while pointing at the folio.
+                if (this.peelProgress >= 0.25) { this._completeCurl(); } else { this._snapBack(); }
               });
             }
             if (leftCtrl) {
@@ -568,7 +575,7 @@
               });
               leftCtrl.addEventListener('xbuttonup', () => {
                 if (!this.isCurling || !this.isVR || !this.activeController) return;
-                this._completeCurl();
+                if (this.peelProgress >= 0.25) { this._completeCurl(); } else { this._snapBack(); }
               });
             }
           });
@@ -679,8 +686,10 @@
             // page turn sound) on the press frame rather than the release frame.
             this._skipFirstCurlTick = false;
           } else if (btn && !btn.pressed) {
+            // Null the controller before the branch so abuttonup/xbuttonup
+            // events that may fire in the same JS turn cannot double-trigger.
             this.activeController = null;
-            this._completeCurl();
+            if (this.peelProgress >= 0.25) { this._completeCurl(); } else { this._snapBack(); }
             return;
           }
           this.activeController.object3D.getWorldPosition(this._ctrlPos);
