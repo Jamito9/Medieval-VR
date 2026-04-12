@@ -34,8 +34,8 @@
           scene.addEventListener('enter-vr', () => { this.isVR = true;  });
           scene.addEventListener('exit-vr',  () => { this.isVR = false; });
           scene.addEventListener('loaded', () => {
-            this.leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
-            this.rightCtrl = document.querySelector('[laser-controls="hand: right"]');
+            this.leftCtrl  = document.querySelector('#left-hand');
+            this.rightCtrl = document.querySelector('#right-hand');
           });
         },
         _getGamepad: function (ctrl) {
@@ -512,8 +512,8 @@
           });
 
           scene.addEventListener('loaded', () => {
-            const rightCtrl = document.querySelector('[laser-controls="hand: right"]');
-            const leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
+            const rightCtrl = document.querySelector('#right-hand');
+            const leftCtrl  = document.querySelector('#left-hand');
 
             const isHotspotTargeted = () => {
               const hs = folio.components['folio-hotspots'];
@@ -816,8 +816,8 @@
 
           folio.addEventListener('click', () => { if (!this.isVR) toggle(); });
           scene.addEventListener('loaded', () => {
-            this.rightCtrl     = document.querySelector('[laser-controls="hand: right"]');
-            this.leftCtrl      = document.querySelector('[laser-controls="hand: left"]');
+            this.rightCtrl     = document.querySelector('#right-hand');
+            this.leftCtrl      = document.querySelector('#left-hand');
             this.desktopCursor = document.querySelector('#cursor');
             if (this.rightCtrl) this.rightCtrl.addEventListener('abuttondown', toggle);
             if (this.leftCtrl)  this.leftCtrl.addEventListener('xbuttondown',  toggle);
@@ -902,8 +902,8 @@
             else { audio.pause(); audio.currentTime = 0; scene.currentPanelAudio = null; }
           };
           scene.addEventListener('loaded', () => {
-            const rightCtrl = document.querySelector('[laser-controls="hand: right"]');
-            const leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
+            const rightCtrl = document.querySelector('#right-hand');
+            const leftCtrl  = document.querySelector('#left-hand');
             if (rightCtrl) rightCtrl.addEventListener('abuttondown', toggle);
             if (leftCtrl)  leftCtrl.addEventListener('xbuttondown',  toggle);
           });
@@ -1133,8 +1133,14 @@
                     animation__reset="property: scale; to: 0.4 0.4 0.4; dur: 500; startEvents: mouseleave;">
           </a-cursor>
         </a-entity>
-        <a-entity laser-controls="hand: left"  raycaster="objects: .clickable; far: 10;"></a-entity>
-        <a-entity laser-controls="hand: right" raycaster="objects: .clickable; far: 10;"></a-entity>
+        <a-entity id="left-hand"
+                  hand-controls="hand: left; handModelStyle: lowPoly; color: #c8956c"
+                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35;">
+        </a-entity>
+        <a-entity id="right-hand"
+                  hand-controls="hand: right; handModelStyle: lowPoly; color: #c8956c"
+                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35;">
+        </a-entity>
       </a-entity>
 
       <a-entity id="zoom-anchor" position="0 1.1 -1.4">
