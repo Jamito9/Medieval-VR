@@ -270,22 +270,34 @@
           //      to be ready by the time any page turn can be triggered.
           //   2. backPage mesh map: A-Frame may have loaded it during the animation.
           //   3. Build directly from the preloaded <img> element as a last resort.
+          //
+          // After resolving the texture, renderer.initTexture() is called to force
+          // an immediate GPU upload. On Quest 2 WebXR, textures that have not been
+          // explicitly uploaded can render as black on the first frame they appear,
+          // even when needsUpdate=true, because the XR compositor uploads on its own
+          // schedule. initTexture() bypasses that and makes the upload synchronous.
           const applyDestTex = (destSrc) => {
             const fMesh = folio.getObject3D('mesh');
             if (!fMesh || !fMesh.material) return;
+            const renderer = scene.renderer;
+
+            const applyTex = (tex) => {
+              fMesh.material.map         = tex;
+              fMesh.material.needsUpdate = true;
+              // Force immediate GPU upload — critical on Quest 2 WebXR.
+              if (renderer && renderer.initTexture) renderer.initTexture(tex);
+            };
 
             // Tier 1: our own preloaded cache (most reliable in WebXR)
             if (this._texCache[destSrc]) {
-              fMesh.material.map         = this._texCache[destSrc];
-              fMesh.material.needsUpdate = true;
+              applyTex(this._texCache[destSrc]);
               return;
             }
 
             // Tier 2: A-Frame-loaded texture on the backPage
             const bpMesh = this.backPage.getObject3D('mesh');
             if (bpMesh && bpMesh.material && bpMesh.material.map) {
-              fMesh.material.map         = bpMesh.material.map;
-              fMesh.material.needsUpdate = true;
+              applyTex(bpMesh.material.map);
               return;
             }
 
@@ -293,9 +305,8 @@
             const imgEl = document.querySelector(destSrc);
             if (imgEl && (imgEl.complete || imgEl.naturalWidth > 0)) {
               const tex = new THREE.Texture(imgEl);
-              tex.needsUpdate        = true;
-              fMesh.material.map         = tex;
-              fMesh.material.needsUpdate = true;
+              tex.needsUpdate = true;
+              applyTex(tex);
             }
           };
 
@@ -333,24 +344,24 @@
                   //    state is consistent before the texture changes.
                   if (scene.doSwap) scene.doSwap(dir, true);
 
-                  // 2. Keep A-Frame's DOM in sync so the inspector and other
-                  //    components know the src has changed. This also primes
-                  //    A-Frame's internal material reference to the correct
-                  //    asset so any subsequent late-firing async callbacks
-                  //    reinforce rather than revert the texture.
-                  folio.setAttribute('src', capturedDestSrc);
-
-                  // 3. Force the Three.js material map to update immediately
-                  //    using the robust Tier-1 WebXR pre-loaded texture cache.
-                  //    applyDestTex writes fMesh.material.map synchronously from
-                  //    _texCache (populated by THREE.TextureLoader at scene load),
-                  //    which is the most reliable texture source on Quest 2 WebXR
-                  //    where material-texture-loaded is not guaranteed to fire.
+                  // 2. Write the destination texture directly to Three.js.
+                  //    folio.setAttribute('src') is NEVER called in this path —
+                  //    not here, not in a deferred rAF. In A-Frame 1.4.0,
+                  //    setAttribute('src') synchronously triggers the material
+                  //    component's update(), which resets opacity to 1 (revealing
+                  //    the folio before the texture is on the GPU) AND queues an
+                  //    async texture-load callback that fires after resetCurl and
+                  //    overwrites material.map on Quest 2's XR compositor rAF
+                  //    queue — always winning the last write with a stale texture.
+                  //    Deferring setAttribute one rAF still races; the only safe
+                  //    fix is to never call it during the curl path at all.
+                  //    applyDestTex reads from _texCache (THREE.TextureLoader,
+                  //    preloaded at scene start) and calls renderer.initTexture()
+                  //    to force an immediate GPU upload before reveal.
                   applyDestTex(capturedDestSrc);
 
-                  // 4. Safely reveal the folio. Both setAttribute and applyDestTex
-                  //    have already run synchronously in this same setTimeout
-                  //    callback, so the XR rAF cannot interleave between them.
+                  // 3. Reveal the folio. Correct texture is already on the GPU.
+                  //    Nothing touches material.map after this point.
                   if (this.isCurling) this.resetCurl();
 
                 }, 50);
