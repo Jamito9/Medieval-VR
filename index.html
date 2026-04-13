@@ -22,6 +22,27 @@
         }
       });
 
+      // ── Shared haptic helper ──────────────────────────────────────────────────
+      // Resolves the Gamepad from a hand-controls / tracked-controls entity and
+      // fires a haptic pulse.  All guards are explicit so there is no risk of a
+      // null-dereference if the controller has not yet been matched by the XR
+      // session (a real edge case on Quest 2 during the first few frames).
+      //
+      // Resolution chain: hand-controls → oculus-touch-controls → tracked-controls
+      // tracked-controls stores the XRInputSource in this.controller, and the
+      // Gamepad is at this.controller.gamepad.  This path is identical regardless
+      // of whether the entity was originally created with laser-controls or
+      // hand-controls, because both ultimately register tracked-controls.
+      function pulseHaptic (ctrlEl, intensity, duration) {
+        if (!ctrlEl) return;
+        const tc = ctrlEl.components && ctrlEl.components['tracked-controls'];
+        if (!tc || !tc.controller) return;
+        const gp = tc.controller.gamepad;
+        if (gp && gp.hapticActuators && gp.hapticActuators.length > 0) {
+          gp.hapticActuators[0].pulse(intensity, duration);
+        }
+      }
+
       AFRAME.registerComponent('vr-locomotion', {
         init: function () {
           this.isVR      = false;
@@ -71,6 +92,7 @@
             if (Math.abs(stickX) > 0.6 && !this._snapUsed) {
               const snapRad = stickX > 0 ? -THREE.MathUtils.degToRad(45) : THREE.MathUtils.degToRad(45);
               this.el.object3D.rotation.y += snapRad;
+              pulseHaptic(this.rightCtrl, 0.5, 40);
               this._snapUsed = true;
             } else if (Math.abs(stickX) < 0.3) {
               this._snapUsed = false;
@@ -86,12 +108,7 @@
           this.previousControllerPos = new THREE.Vector3();
           this.currentControllerPos  = new THREE.Vector3();
           this.triggerHaptic = (intensity, duration) => {
-            if (this.activeController && this.activeController.components['tracked-controls']) {
-              const controller = this.activeController.components['tracked-controls'].controller;
-              if (controller && controller.gamepad && controller.gamepad.hapticActuators.length > 0) {
-                controller.gamepad.hapticActuators[0].pulse(intensity, duration);
-              }
-            }
+            pulseHaptic(this.activeController, intensity, duration);
           };
           this.el.sceneEl.addEventListener('enter-vr', () => { this.isVR = true;  });
           this.el.sceneEl.addEventListener('exit-vr',  () => { this.isVR = false; });
@@ -126,13 +143,7 @@
       AFRAME.registerComponent('haptic-button', {
         init: function () {
           this.el.addEventListener('mousedown', (evt) => {
-            const controller = evt.detail.cursorEl;
-            if (controller && controller.components['tracked-controls']) {
-              const gamepad = controller.components['tracked-controls'].controller.gamepad;
-              if (gamepad && gamepad.hapticActuators.length > 0) {
-                gamepad.hapticActuators[0].pulse(0.4, 30);
-              }
-            }
+            pulseHaptic(evt.detail && evt.detail.cursorEl, 0.4, 30);
           });
         }
       });
@@ -315,7 +326,11 @@
 
           this._completeCurl = () => {
             playPageTurn();
+            const capturedCtrl   = this.activeController;
             this.activeController = null;
+            // Brief strong pulse as the page commits — felt at the moment the
+            // turn sound fires so audio and haptic land on the same frame.
+            pulseHaptic(capturedCtrl, 0.7, 60);
             const startProg      = this.peelProgress;
             const capturedSide   = this.curlSide;
             const startTime      = performance.now();
@@ -371,7 +386,10 @@
           };
 
           this._snapBack = () => {
+            const capturedCtrl   = this.activeController;
             this.activeController = null;
+            // Light tap to signal the page snapping back without completing.
+            pulseHaptic(capturedCtrl, 0.2, 30);
             const startProg    = this.peelProgress;
             const capturedSide = this.curlSide;
             const startTime    = performance.now();
@@ -468,6 +486,9 @@
             this.curlSide             = side;
             this.peelProgress         = 0;
             this.activeController     = controllerEl || null;
+            // Soft rumble the moment the curl begins so the user gets tactile
+            // confirmation that the page-turn gesture has registered.
+            pulseHaptic(this.activeController, 0.35, 40);
 
             if (this.activeController) {
               this.activeController.object3D.getWorldPosition(this._ctrlPos);
@@ -877,13 +898,10 @@
           zone.setAttribute('material', 'opacity: 0; transparent: true; side: double');
           zone.classList.add('clickable');
           panel.appendChild(zone);
-          const pulseHaptic = (evt) => {
-            const ctrl = evt && evt.detail && evt.detail.cursorEl; if (!ctrl) return;
-            const tc   = ctrl.components && ctrl.components['tracked-controls']; if (!tc) return;
-            const gp   = tc.controller && tc.controller.gamepad;
-            if (gp && gp.hapticActuators && gp.hapticActuators.length > 0) gp.hapticActuators[0].pulse(0.65, 80);
+          const pulseAudioHaptic = (evt) => {
+            pulseHaptic(evt && evt.detail && evt.detail.cursorEl, 0.65, 80);
           };
-          zone.addEventListener('mouseenter', (evt) => { isTargeted = true;  pulseHaptic(evt); });
+          zone.addEventListener('mouseenter', (evt) => { isTargeted = true;  pulseAudioHaptic(evt); });
           zone.addEventListener('mouseleave', ()     => { isTargeted = false; });
           const getAudio = () => {
             const pages = scene.pages; if (!pages) return null;
