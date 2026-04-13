@@ -194,6 +194,230 @@
         }
       });
 
+      // ── hand-finger-curl ──────────────────────────────────────────────────────
+      // Reads analog gamepad values each tick and drives individual finger bone
+      // rotations so finger curl is proportional to how hard the user squeezes.
+      //
+      // Quest 2 Oculus Touch button layout (WebXR Gamepad API):
+      //   buttons[0].value  — index trigger   ANALOG 0–1
+      //   buttons[1].value  — grip trigger     ANALOG 0–1
+      //   buttons[3].touched— thumbstick touch BOOL  (resting thumb → curl)
+      //   buttons[4].pressed— A (right) / X (left)
+      //   buttons[5].pressed— B (right) / Y (left)
+      //
+      // Finger ↔ input:
+      //   Thumb          → face buttons or thumbstick touched  (binary, lerped)
+      //   Index          → index trigger value
+      //   Middle/Ring/Pinky → grip trigger value
+      //
+      // Bone discovery:
+      //   On model-loaded, traverses the entity's object3D looking for THREE.Bone
+      //   nodes whose names contain recognisable finger keywords (case-insensitive).
+      //   Works for all A-Frame 1.x GLB hand model naming conventions:
+      //     thumb0_l / thumb1_l / thumb2_l
+      //     f_index.01 / f_index.02
+      //     index_proximal / index_intermediate / index_distal
+      //   Bones are sorted proximal→distal by extracting the first integer from the
+      //   name, falling back to keyword detection (proximal/intermediate/distal).
+      //   A console.log lists what was found so the mapping can be verified.
+      //   If no bones are found (legacy OBJ lowPoly without skeleton), a warning
+      //   is logged and the component no-ops safely.
+      //
+      // Curl direction:
+      //   A-Frame's GLB hand models follow the Blender Y-up bone convention: each
+      //   finger bone's long axis is local +Y.  Curling toward the palm is a
+      //   rotation around local +Z.  Sign is −1 for the right hand (+1 for left)
+      //   because the left-hand model is the right-hand model mirrored on X,
+      //   reversing the Z-curl chirality.
+      //   If the curl goes the wrong way on your specific model, swap
+      //   this._sign in init(), or swap the axis to (1,0,0).
+      //
+      // GC notes:
+      //   All THREE scratch objects are pre-allocated in init().  The hot path
+      //   (tick + _applyCurl) is allocation-free.
+      AFRAME.registerComponent('hand-finger-curl', {
+
+        init: function () {
+          this.bones = { thumb: [], index: [], middle: [], ring: [], pinky: [] };
+          this.ready = false;
+
+          const hc    = this.el.getAttribute('hand-controls');
+          this.hand   = (hc && hc.hand) ? hc.hand : 'right';
+
+          // Pre-allocate scratch objects — reused every tick, never reallocated.
+          this._curlQuat   = new THREE.Quaternion();
+          this._targetQuat = new THREE.Quaternion();
+          // Curl axis is always local Z.  Set once here, never mutated.
+          this._axis       = new THREE.Vector3(0, 0, 1);
+          // Right-hand curl is negative Z (inward toward palm).
+          // Left-hand GLB is mirrored, so positive Z curls inward.
+          this._sign = (this.hand === 'right') ? -1 : 1;
+
+          this.el.addEventListener('model-loaded', () => { this._findBones(); });
+          // Defensive fallback: if model is already present when this component
+          // is attached (e.g. hot-reload), _findBones will find bones immediately.
+          this._findBones();
+        },
+
+        _findBones: function () {
+          // Reset from any previous model.
+          for (const k of Object.keys(this.bones)) this.bones[k] = [];
+          this.ready = false;
+
+          const PATTERNS = {
+            thumb:  /thumb/i,
+            index:  /index/i,
+            middle: /middle/i,
+            ring:   /ring/i,
+            pinky:  /pinky|little/i
+          };
+
+          // Walk the full scene graph; collect every THREE.Bone by finger.
+          this.el.object3D.traverse(function (node) {
+            if (!node.isBone) return;
+            var name = node.name;
+            for (var finger in PATTERNS) {
+              if (PATTERNS[finger].test(name)) {
+                this.bones[finger].push(node);
+                break;
+              }
+            }
+          }.bind(this));
+
+          // Sort proximal → distal within each finger.
+          // Primary key: first integer in the name (thumb0 < thumb1 < thumb2).
+          // Fallback key: anatomical keyword (metacarpal < proximal < intermediate
+          //               < distal < tip) for names like 'index_proximal'.
+          var WORD_PRI = {
+            meta: 0, carpal: 0, proximal: 1,
+            intermediate: 2, distal: 3, tip: 4
+          };
+          var sortKey = function (name) {
+            var m = name.match(/\d+/);
+            if (m) return parseInt(m[0]);
+            var lo = name.toLowerCase();
+            for (var w in WORD_PRI) {
+              if (lo.indexOf(w) !== -1) return WORD_PRI[w];
+            }
+            return 99;
+          };
+          for (var finger in this.bones) {
+            this.bones[finger].sort(function (a, b) {
+              return sortKey(a.name) - sortKey(b.name);
+            });
+          }
+
+          // Snapshot the rest-pose quaternion for every bone immediately after
+          // model load, before hand-controls has ticked and animated anything.
+          // Curl is always computed relative to this rest pose so the two
+          // systems don't drift over time.
+          for (var finger in this.bones) {
+            var arr = this.bones[finger];
+            for (var i = 0; i < arr.length; i++) {
+              arr[i].userData.restQuat = arr[i].quaternion.clone();
+            }
+          }
+
+          var total = 0;
+          for (var k in this.bones) total += this.bones[k].length;
+
+          if (total > 0) {
+            this.ready = true;
+            var summary = {};
+            for (var f in this.bones) {
+              summary[f] = this.bones[f].map(function (b) { return b.name; });
+            }
+            console.log('[hand-finger-curl] ' + this.hand + ' — ' + total +
+              ' bones mapped:', summary);
+          } else {
+            console.warn('[hand-finger-curl] ' + this.hand +
+              ' — no bones found. The lowPoly OBJ model has no skeleton; ' +
+              'set handModelStyle: highPoly for analog finger curl.');
+          }
+        },
+
+        // Resolve the Gamepad for this hand.  Mirrors pulseHaptic's two-attempt
+        // strategy: tracked-controls chain first, navigator.getGamepads() scan
+        // second (handles the first few frames before XR input sources are bound).
+        _getGamepad: function () {
+          var tc = this.el.components['tracked-controls'];
+          if (tc && tc.controller && tc.controller.gamepad) {
+            return tc.controller.gamepad;
+          }
+          if (!navigator.getGamepads) return null;
+          var pads = navigator.getGamepads();
+          for (var i = 0; i < pads.length; i++) {
+            var gp = pads[i];
+            if (!gp || !gp.connected) continue;
+            var id = gp.id.toLowerCase();
+            if (this.hand === 'left'  && id.indexOf('left')  !== -1) return gp;
+            if (this.hand === 'right' && id.indexOf('right') !== -1) return gp;
+          }
+          return null;
+        },
+
+        // Drive curl for one finger's bone chain.
+        //   bones — THREE.Bone[] ordered proximal→distal
+        //   value — 0.0 (fully open) to 1.0 (fully curled)
+        //   dt    — frame delta ms (for frame-rate-independent slerp)
+        _applyCurl: function (bones, value, dt) {
+          if (!bones.length) return;
+
+          // Max curl angle per joint (radians).
+          // Proximal phalanx curls most (~74°); distal/tip curls least (~46°).
+          var MAX_ANGLE = [1.3, 1.15, 1.0, 0.8];
+
+          // Normalise lerp to Quest 2's native 72 Hz (13.89 ms/frame).
+          // At 72 Hz lerps 25% per frame → smooth ~4 frame reach.
+          // At 90 Hz slightly faster, which is fine for a responsive feel.
+          var lerpFactor = Math.min(1.0, 0.25 * (dt / 13.89));
+
+          for (var i = 0; i < bones.length; i++) {
+            var bone = bones[i];
+            var rest = bone.userData.restQuat;
+            if (!rest) continue;
+
+            var angle = value *
+              MAX_ANGLE[i < MAX_ANGLE.length ? i : MAX_ANGLE.length - 1] *
+              this._sign;
+
+            // Build the curl quaternion in-place (no allocation).
+            this._curlQuat.setFromAxisAngle(this._axis, angle);
+
+            // target = rest ⊗ curl
+            // Post-multiplying applies curl in the bone's own local frame,
+            // which is the correct space for anatomical finger rotation.
+            this._targetQuat.multiplyQuaternions(rest, this._curlQuat);
+
+            // Slerp toward target.  bone.quaternion is modified in-place.
+            bone.quaternion.slerp(this._targetQuat, lerpFactor);
+          }
+        },
+
+        tick: function (t, dt) {
+          if (!this.ready) return;
+          var gp = this._getGamepad();
+          if (!gp) return;
+
+          // Analog values clamped 0–1.
+          var trigger = gp.buttons[0] ? Math.max(0, Math.min(1, gp.buttons[0].value)) : 0;
+          var grip    = gp.buttons[1] ? Math.max(0, Math.min(1, gp.buttons[1].value)) : 0;
+
+          // Thumb is binary: any face button or thumbstick contact → full curl.
+          var thumb = (
+            (gp.buttons[4] && gp.buttons[4].pressed) ||
+            (gp.buttons[5] && gp.buttons[5].pressed) ||
+            (gp.buttons[3] && gp.buttons[3].touched)
+          ) ? 1.0 : 0.0;
+
+          this._applyCurl(this.bones.thumb,  thumb,   dt);
+          this._applyCurl(this.bones.index,  trigger, dt);
+          this._applyCurl(this.bones.middle, grip,    dt);
+          this._applyCurl(this.bones.ring,   grip,    dt);
+          this._applyCurl(this.bones.pinky,  grip,    dt);
+        }
+      });
+
       AFRAME.registerComponent('page-curl', {
 
         init: function () {
@@ -1200,12 +1424,14 @@
         <a-entity id="left-hand"
                   hand-controls="hand: left; handModelStyle: lowPoly; color: #c8956c"
                   raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35;"
-                  cursor="fuse: false; downEvents: triggerdown; upEvents: triggerup">
+                  cursor="fuse: false; downEvents: triggerdown; upEvents: triggerup"
+                  hand-finger-curl>
         </a-entity>
         <a-entity id="right-hand"
                   hand-controls="hand: right; handModelStyle: lowPoly; color: #c8956c"
                   raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35;"
-                  cursor="fuse: false; downEvents: triggerdown; upEvents: triggerup">
+                  cursor="fuse: false; downEvents: triggerdown; upEvents: triggerup"
+                  hand-finger-curl>
         </a-entity>
       </a-entity>
 
