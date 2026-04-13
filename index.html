@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8">
     <title>Medieval Scriptorium – Test Cockpit Build</title>
-    <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
-   <script src="https://unpkg.com/aframe-environment-component@1.3.3/dist/aframe-environment-component.min.js"></script>
+    <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
+   <script src="https://unpkg.com/aframe-environment-component@1.3.7/dist/aframe-environment-component.min.js"></script>
     <script>
 
       AFRAME.registerComponent('look-at-user', {
@@ -474,6 +474,9 @@
               if (!url) return;
               this._texLoader.load(url, (tex) => {
                 // THREE.TextureLoader default flipY=true is correct for standard WebGL.
+                // Three.js r152+ (A-Frame 1.5+): manually-loaded textures default to
+                // NoColorSpace; declare sRGB so colours are gamma-decoded on-screen.
+                tex.colorSpace = 'srgb';
                 this._texCache[page.src] = tex;
               });
             });
@@ -586,6 +589,9 @@
             const imgEl = document.querySelector(destSrc);
             if (imgEl && (imgEl.complete || imgEl.naturalWidth > 0)) {
               const tex = new THREE.Texture(imgEl);
+              // Three.js r152+ (A-Frame 1.5+): new THREE.Texture() defaults to
+              // NoColorSpace; set sRGB explicitly for correct on-screen colours.
+              tex.colorSpace = 'srgb';
               tex.needsUpdate = true;
               applyTex(tex);
             }
@@ -1349,7 +1355,7 @@
 
   <body>
 
-    <a-scene scriptorium-logic renderer="antialias: true; colorManagement: true;">
+    <a-scene scriptorium-logic renderer="antialias: true; colorManagement: true; useLegacyLights: false;">
 
       <a-assets>
         <!-- Medieval library room model — loaded before any interaction is possible -->
