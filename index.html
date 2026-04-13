@@ -23,23 +23,69 @@
       });
 
       // ── Shared haptic helper ──────────────────────────────────────────────────
-      // Resolves the Gamepad from a hand-controls / tracked-controls entity and
-      // fires a haptic pulse.  All guards are explicit so there is no risk of a
-      // null-dereference if the controller has not yet been matched by the XR
-      // session (a real edge case on Quest 2 during the first few frames).
+      // Two-attempt strategy for reliable haptics with hand-controls on Quest 2.
       //
-      // Resolution chain: hand-controls → oculus-touch-controls → tracked-controls
-      // tracked-controls stores the XRInputSource in this.controller, and the
-      // Gamepad is at this.controller.gamepad.  This path is identical regardless
-      // of whether the entity was originally created with laser-controls or
-      // hand-controls, because both ultimately register tracked-controls.
+      // Attempt 1 — tracked-controls component chain:
+      //   hand-controls dynamically injects oculus-touch-controls, which injects
+      //   tracked-controls.  tracked-controls.controller is the XRInputSource;
+      //   controller.gamepad is the Gamepad.  Wrapped in try/catch because the
+      //   hapticActuators API can throw on some Meta browser versions.
+      //   Both the older hapticActuators[0].pulse() and the newer
+      //   vibrationActuator.playEffect() are tried in order.
+      //
+      // Attempt 2 — navigator.getGamepads() scan:
+      //   If the component chain is not yet populated (can happen in the first
+      //   few frames after entering VR), fall back to iterating the raw Gamepad
+      //   array and matching by the 'Left'/'Right' substring in the gamepad id.
+      //   getAttribute('hand-controls') returns the parsed schema object, so
+      //   .hand is 'left' or 'right' directly.
       function pulseHaptic (ctrlEl, intensity, duration) {
         if (!ctrlEl) return;
+
+        // Attempt 1: tracked-controls component path
         const tc = ctrlEl.components && ctrlEl.components['tracked-controls'];
-        if (!tc || !tc.controller) return;
-        const gp = tc.controller.gamepad;
-        if (gp && gp.hapticActuators && gp.hapticActuators.length > 0) {
-          gp.hapticActuators[0].pulse(intensity, duration);
+        if (tc && tc.controller) {
+          const gp = tc.controller.gamepad;
+          if (gp) {
+            if (gp.hapticActuators && gp.hapticActuators.length > 0) {
+              try { gp.hapticActuators[0].pulse(intensity, duration); return; } catch (e) {}
+            }
+            if (gp.vibrationActuator) {
+              try {
+                gp.vibrationActuator.playEffect('dual-rumble', {
+                  startDelay: 0, duration: duration,
+                  weakMagnitude: intensity, strongMagnitude: intensity
+                });
+                return;
+              } catch (e) {}
+            }
+          }
+        }
+
+        // Attempt 2: navigator.getGamepads() scan matched by hand label
+        const handData = ctrlEl.getAttribute('hand-controls');
+        if (!handData) return;
+        const hand = handData.hand;
+        if (!hand) return;
+        const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+        for (let i = 0; i < gamepads.length; i++) {
+          const gp = gamepads[i];
+          if (!gp || !gp.connected) continue;
+          const idLower = gp.id.toLowerCase();
+          const matches = hand === 'left' ? idLower.includes('left') : idLower.includes('right');
+          if (!matches) continue;
+          if (gp.hapticActuators && gp.hapticActuators.length > 0) {
+            try { gp.hapticActuators[0].pulse(intensity, duration); return; } catch (e) {}
+          }
+          if (gp.vibrationActuator) {
+            try {
+              gp.vibrationActuator.playEffect('dual-rumble', {
+                startDelay: 0, duration: duration,
+                weakMagnitude: intensity, strongMagnitude: intensity
+              });
+              return;
+            } catch (e) {}
+          }
         }
       }
 
@@ -1153,11 +1199,13 @@
         </a-entity>
         <a-entity id="left-hand"
                   hand-controls="hand: left; handModelStyle: lowPoly; color: #c8956c"
-                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35;">
+                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35;"
+                  cursor="fuse: false; downEvents: triggerdown; upEvents: triggerup">
         </a-entity>
         <a-entity id="right-hand"
                   hand-controls="hand: right; handModelStyle: lowPoly; color: #c8956c"
-                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35;">
+                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35;"
+                  cursor="fuse: false; downEvents: triggerdown; upEvents: triggerup">
         </a-entity>
       </a-entity>
 
