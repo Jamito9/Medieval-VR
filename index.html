@@ -194,6 +194,55 @@
         }
       });
 
+      // ── wrist-offset ─────────────────────────────────────────────────────────
+      // Corrects the hand model's position and rotation so the virtual wrist sits
+      // at the Quest 2 controller's physical tracking origin rather than floating
+      // above it.  Fires once after model-loaded (and again on any hot-reload) by
+      // nudging the first non-Bone child of the entity's object3D — the pivot Object3D
+      // that oculus-touch-controls creates to hold the GLB hand mesh.
+      //
+      // oculus-touch-controls already applies a base pivot rotation (≈40°) to match
+      // the controller grip angle; our offset is additive, so it does not overwrite
+      // the base pose — it only fine-tunes the wrist seat.
+      //
+      // Quest 2 empirical values (matching Meta's reference controller geometry):
+      //   posOffset  (0, −0.015, 0.04) m  — 1.5 cm down, 4 cm forward from grip origin
+      //   rotOffset  −35° on X           — tilts the model forward along the controller body
+      //
+      // GC notes: posOffset and rotOffsetX are pre-allocated in init() and never
+      // reallocated.  _apply() is allocation-free.
+      AFRAME.registerComponent('wrist-offset', {
+        init: function () {
+          // Pre-allocate — reused in _apply(), never reallocated.
+          this._posOffset  = new THREE.Vector3(0, -0.015, 0.04);
+          this._rotOffsetX = THREE.MathUtils.degToRad(-35);
+
+          this._apply = this._apply.bind(this);
+          this.el.addEventListener('model-loaded', this._apply);
+          // Defensive: apply immediately if the model is already loaded (hot-reload).
+          this._apply();
+        },
+
+        _apply: function () {
+          const root = this.el.object3D;
+          if (!root.children.length) return;
+          for (let i = 0; i < root.children.length; i++) {
+            const child = root.children[i];
+            // Skip skeleton bones — they are not the model pivot.
+            if (child.isBone) continue;
+            // Apply additive correction to the pivot.
+            // position.add() and rotation.x += are both mutation-free allocations.
+            child.position.add(this._posOffset);
+            child.rotation.x += this._rotOffsetX;
+            return; // Only the first non-Bone child is the model pivot.
+          }
+        },
+
+        remove: function () {
+          this.el.removeEventListener('model-loaded', this._apply);
+        }
+      });
+
       // ── hand-finger-curl ──────────────────────────────────────────────────────
       // Reads analog gamepad values each tick and drives individual finger bone
       // rotations so finger curl is proportional to how hard the user squeezes.
@@ -201,14 +250,14 @@
       // Quest 2 Oculus Touch button layout (WebXR Gamepad API):
       //   buttons[0].value  — index trigger   ANALOG 0–1
       //   buttons[1].value  — grip trigger     ANALOG 0–1
-      //   buttons[3].touched— thumbstick touch BOOL  (resting thumb → curl)
-      //   buttons[4].pressed— A (right) / X (left)
-      //   buttons[5].pressed— B (right) / Y (left)
+      //   buttons[3].touched— thumbstick touch CAPACITIVE BOOL
+      //   buttons[4].touched— A (right) / X (left) CAPACITIVE BOOL
+      //   buttons[5].touched— B (right) / Y (left) CAPACITIVE BOOL
       //
       // Finger ↔ input:
-      //   Thumb          → face buttons or thumbstick touched  (binary, lerped)
-      //   Index          → index trigger value
-      //   Middle/Ring/Pinky → grip trigger value
+      //   Index             → buttons[0].value  (index trigger, analog)
+      //   Middle/Ring/Pinky → buttons[1].value  (side grip, analog)
+      //   Thumb             → capacitive: any of buttons[3/4/5] touched or pressed
       //
       // Bone discovery:
       //   On model-loaded, traverses the entity's object3D looking for THREE.Bone
@@ -403,9 +452,15 @@
           var trigger = gp.buttons[0] ? Math.max(0, Math.min(1, gp.buttons[0].value)) : 0;
           var grip    = gp.buttons[1] ? Math.max(0, Math.min(1, gp.buttons[1].value)) : 0;
 
-          // Thumb: A button (right) / X button (left) — Quest 2 buttons[4].
-          // Mapped to a single binary input; lerped in _applyCurl for smoothness.
-          var thumb = (gp.buttons[4] && gp.buttons[4].pressed) ? 1.0 : 0.0;
+          // Capacitive thumb: curl whenever the thumbstick (3), A/X (4), or B/Y (5)
+          // registers a touch OR press event.  This mirrors the Quest 2's capacitive
+          // sensor behaviour — the thumb curls as soon as it rests on any surface.
+          // The binary 0/1 target is slerped by _applyCurl for smooth transitions.
+          var thumb = (
+            (gp.buttons[3] && (gp.buttons[3].touched || gp.buttons[3].pressed)) ||
+            (gp.buttons[4] && (gp.buttons[4].touched || gp.buttons[4].pressed)) ||
+            (gp.buttons[5] && (gp.buttons[5].touched || gp.buttons[5].pressed))
+          ) ? 1.0 : 0.0;
 
           this._applyCurl(this.bones.thumb,  thumb,   dt);
           this._applyCurl(this.bones.index,  trigger, dt);
@@ -437,8 +492,7 @@
 
           // ── Gesture-grab state (VR only) ───────────────────────────────────────
           // These are populated on scene load and used by tick() for proximity-based
-          // curl initiation, per-frame tilt, and continuous haptic feedback.
-          this._tiltPrev          = new THREE.Vector3();  // per-frame hand position — folio tilt
+          // curl initiation and continuous haptic feedback.
           this._lastHapticTime    = 0;                    // timestamp — throttles peel rumble
           this._cornerWorldPos    = new THREE.Vector3();  // scratch — corner proximity test
           this._grabCooldown      = 0;                    // ms remaining — prevents instant re-grab
@@ -447,6 +501,37 @@
           this._isHotspotTargeted = null;                 // interaction-guard helpers
           this._isAudioHovered    = null;
           this._startCurl         = null;                 // assigned below after startCurl is defined
+
+          // Pre-allocated gamepad resolver — mirrors pulseHaptic's two-attempt strategy.
+          // Defined once in init() so tick() never allocates new function objects per frame.
+          this._getGP = function (ctrl) {
+            if (!ctrl) return null;
+            var tc = ctrl.components && ctrl.components['tracked-controls'];
+            if (tc && tc.controller && tc.controller.gamepad) return tc.controller.gamepad;
+            if (!navigator.getGamepads) return null;
+            var hd   = ctrl.getAttribute('hand-controls');
+            var hand = hd && hd.hand;
+            if (!hand) return null;
+            var pads = navigator.getGamepads();
+            for (var i = 0; i < pads.length; i++) {
+              var gp = pads[i];
+              if (!gp || !gp.connected) continue;
+              var id = gp.id.toLowerCase();
+              if (hand === 'left'  && id.indexOf('left')  !== -1) return gp;
+              if (hand === 'right' && id.indexOf('right') !== -1) return gp;
+            }
+            return null;
+          };
+
+          // Pre-allocated squeeze resolver — returns the greater of index trigger
+          // (buttons[0]) and side grip (buttons[1]), clamped 0–1.
+          // Defined once in init() so tick() is allocation-free on the hot path.
+          this._squeezeVal = function (gp) {
+            if (!gp) return 0;
+            var trigger = gp.buttons[0] ? Math.max(0, Math.min(1, gp.buttons[0].value)) : 0;
+            var grip    = gp.buttons[1] ? Math.max(0, Math.min(1, gp.buttons[1].value)) : 0;
+            return Math.max(trigger, grip);
+          };
 
           // Texture cache: populated at scene load via THREE.TextureLoader.
           // Key = asset selector string e.g. '#manuscript1'.
@@ -782,8 +867,6 @@
             if (this.activeController) {
               this.activeController.object3D.getWorldPosition(this._ctrlPos);
               this.startX = this._ctrlPos.x;
-              // Snapshot hand position so tick() can compute per-frame delta for tilt.
-              this._tiltPrev.copy(this._ctrlPos);
             } else {
               this.startMouseX = this._mouseX;
             }
@@ -967,57 +1050,25 @@
             return;
           }
 
-          // ── Inline Gamepad resolver ───────────────────────────────────────────────
-          // Mirrors the two-attempt strategy used throughout this file (pulseHaptic,
-          // vr-locomotion): tracked-controls chain first, navigator.getGamepads() scan
-          // second to handle early frames before XR input sources are bound.
-          const getGP = (ctrl) => {
-            if (!ctrl) return null;
-            const tc = ctrl.components && ctrl.components['tracked-controls'];
-            if (tc && tc.controller && tc.controller.gamepad) return tc.controller.gamepad;
-            if (!navigator.getGamepads) return null;
-            const hd = ctrl.getAttribute('hand-controls');
-            const hand = hd && hd.hand;
-            if (!hand) return null;
-            const pads = navigator.getGamepads();
-            for (let i = 0; i < pads.length; i++) {
-              const gp = pads[i];
-              if (!gp || !gp.connected) continue;
-              const id = gp.id.toLowerCase();
-              if (hand === 'left'  && id.indexOf('left')  !== -1) return gp;
-              if (hand === 'right' && id.indexOf('right') !== -1) return gp;
-            }
-            return null;
-          };
-
-          // Returns the higher of the index-trigger (buttons[0]) and side-grip
-          // (buttons[1]) analog values, both clamped 0–1.
-          const squeezeVal = (gp) => {
-            if (!gp) return 0;
-            const trigger = gp.buttons[0] ? Math.max(0, Math.min(1, gp.buttons[0].value)) : 0;
-            const grip    = gp.buttons[1] ? Math.max(0, Math.min(1, gp.buttons[1].value)) : 0;
-            return Math.max(trigger, grip);
-          };
-
           // ── Phase 1: Not curling — detect a fresh gesture grab ────────────────────
-          // A grab is registered when a controller's physical position is within
-          // CORNER_REACH of a folio corner entity AND the user is squeezing above
-          // GRAB_THRESHOLD.  No raycaster intersection required — proximity alone drives
-          // the detection, which matches natural "reach and grab" VR interaction.
+          // A grab registers when a controller is within CORNER_REACH of a folio
+          // corner entity AND squeezing above GRAB_THRESHOLD.  No raycaster
+          // intersection required — physical proximity drives initiation so the user
+          // can reach out and grab the page naturally in 6DoF space.
           if (!this.isCurling) {
             if (!this._startCurl || (!this._rightCtrl && !this._leftCtrl)) return;
 
             const GRAB_THRESHOLD = 0.50; // 50 % squeeze — deliberate grab, not accidental
-            const CORNER_REACH   = 0.18; // 18 cm radius around each corner hot-zone
+            const CORNER_REACH   = 0.18; // 18 cm world-space radius around each corner
 
             const tryGrab = (ctrl, cornerEl, side) => {
               if (!ctrl || !cornerEl) return;
-              const gp = getGP(ctrl);
-              if (!gp || squeezeVal(gp) < GRAB_THRESHOLD) return;
+              const gp = this._getGP(ctrl);
+              if (!gp || this._squeezeVal(gp) < GRAB_THRESHOLD) return;
               // Guard: hotspot and audio interactions take priority over page curl.
               if (this._isHotspotTargeted && this._isHotspotTargeted()) return;
               if (this._isAudioHovered    && this._isAudioHovered())    return;
-              // Proximity test: compare controller world position to corner world position.
+              // Proximity test in world space.
               cornerEl.object3D.getWorldPosition(this._cornerWorldPos);
               ctrl.object3D.getWorldPosition(this._ctrlPos);
               if (this._cornerWorldPos.distanceTo(this._ctrlPos) <= CORNER_REACH) {
@@ -1026,7 +1077,7 @@
             };
 
             tryGrab(this._rightCtrl, this.rightCorner, 'right');
-            // Only check left if right didn't already initiate (isCurling may now be true).
+            // Only check left if right didn't already initiate a curl.
             if (!this.isCurling) tryGrab(this._leftCtrl, this.leftCorner, 'left');
             return;
           }
@@ -1035,23 +1086,20 @@
           if (!this.activeController) return;
 
           // ── Phase 3: One-frame skip after startCurl ───────────────────────────────
-          // On the frame startCurl fires, squeezeVal is already above GRAB_THRESHOLD
-          // (that's what triggered it). Skipping one tick lets the analog values settle
-          // so we don't misread a transient dip as a release and fire _completeCurl
-          // immediately — the same race condition the old A-button code guarded against.
+          // On the frame startCurl fires, squeezeVal is already ≥ GRAB_THRESHOLD.
+          // Skipping one tick lets analog values settle so we don't misread a transient
+          // dip as a release and immediately fire _completeCurl on the entry frame.
           if (this._skipFirstCurlTick) {
             this._skipFirstCurlTick = false;
-            // Initialise tilt tracker so Phase 5 has a valid delta on the next frame.
-            this.activeController.object3D.getWorldPosition(this._tiltPrev);
             return;
           }
 
           // ── Phase 4: Release detection (hysteresis threshold = 0.15) ─────────────
-          // Lower threshold than GRAB_THRESHOLD (0.50) prevents jitter at the boundary
-          // and gives the user a clear "squeeze → hold → release" gesture model.
-          const gp = getGP(this.activeController);
-          if (!gp || squeezeVal(gp) < 0.15) {
-            // Null the controller first so any queued events cannot double-fire.
+          // Threshold is lower than GRAB_THRESHOLD (0.50) to prevent jitter at the
+          // boundary and give the user a clear squeeze → hold → release gesture model.
+          const gp = this._getGP(this.activeController);
+          if (!gp || this._squeezeVal(gp) < 0.15) {
+            // Null the controller first — prevents queued events from double-firing.
             this.activeController = null;
             if (this.peelProgress >= 0.25) { this._completeCurl(); } else { this._snapBack(); }
             return;
@@ -1067,34 +1115,16 @@
           this.peelProgress = newProgress;
           this.updateCurl(this.peelProgress, this.curlSide);
 
-          // ── Phase 6: Dynamic folio tilt ───────────────────────────────────────────
-          // Apply the per-frame hand positional delta as a small rotational nudge on
-          // the folio's X and Y axes while the grab is active. This gives the physical
-          // sensation of paper weight and tension — the manuscript leans as you pull.
-          // TILT_SENS (degrees/metre) is deliberately lower than vr-grab-rotate's 300
-          // so the tilt is subtle; the ±30° absolute clamp is shared with that component.
-          const tiltDX    = this._ctrlPos.x - this._tiltPrev.x;
-          const tiltDY    = this._ctrlPos.y - this._tiltPrev.y;
-          const TILT_SENS = 55;
-          const rot = this.el.getAttribute('rotation');
-          this.el.setAttribute('rotation', {
-            x: Math.max(-30, Math.min(30, rot.x + tiltDY * TILT_SENS)),
-            y: Math.max(-30, Math.min(30, rot.y - tiltDX * TILT_SENS)),
-            z: rot.z
-          });
-          this._tiltPrev.copy(this._ctrlPos);
-
-          // ── Phase 7: Continuous peel-resistance haptic ────────────────────────────
-          // Throttled to ≥60 ms between pulses to avoid saturating the Quest 2 haptic
-          // actuator. Intensity scales linearly with peelProgress so the paper feels
-          // progressively heavier as more of the page lifts away from the lectern.
-          //   progress 0.0 → intensity 0.10  (barely perceptible paper peel)
-          //   progress 0.5 → intensity 0.25  (clear mid-turn resistance)
-          //   progress 1.0 → intensity 0.40  (maximum pre-commit tension)
+          // ── Phase 6: Peel-resistance haptic ──────────────────────────────────────
+          // Throttled to ≥60 ms between pulses to avoid saturating the Quest 2
+          // haptic actuator.  Intensity scales with peelProgress: the more page is
+          // lifted, the heavier the resistance feels in the hand.
+          //   progress 0.0 → 0.10 intensity  (barely perceptible initial peel)
+          //   progress 0.5 → 0.25 intensity  (clear mid-turn paper resistance)
+          //   progress 1.0 → 0.40 intensity  (maximum pre-commit tension)
           if (t - this._lastHapticTime >= 60) {
             this._lastHapticTime = t;
-            const peelIntensity = 0.1 + (this.peelProgress * 0.3);
-            pulseHaptic(this.activeController, peelIntensity, 50);
+            pulseHaptic(this.activeController, 0.1 + (this.peelProgress * 0.3), 50);
           }
         },
 
@@ -1529,13 +1559,15 @@
         </a-entity>
         <a-entity id="left-hand"
                   hand-controls="hand: left; handModelStyle: lowPoly; color: #c8956c"
-                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35;"
+                  wrist-offset
+                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35; direction: 0 -0.643 -0.766;"
                   cursor="fuse: false; downEvents: triggerdown; upEvents: triggerup"
                   hand-finger-curl>
         </a-entity>
         <a-entity id="right-hand"
                   hand-controls="hand: right; handModelStyle: lowPoly; color: #c8956c"
-                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35;"
+                  wrist-offset
+                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35; direction: 0 -0.643 -0.766;"
                   cursor="fuse: false; downEvents: triggerdown; upEvents: triggerup"
                   hand-finger-curl>
         </a-entity>
