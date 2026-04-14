@@ -3,6 +3,98 @@
   <head>
     <meta charset="utf-8">
     <title>Medieval Scriptorium – Test Cockpit Build</title>
+
+    <!-- ── Loading-screen safety net ────────────────────────────────────────────
+         Three-layer defence against A-Frame's infinite loading screen:
+         
+         LAYER 1  <a-assets timeout="10000"> (in the HTML below)
+           Arms a setTimeout inside the assets component that fires 'loaded' on
+           the <a-assets> element after 10 s regardless of asset state.
+
+         LAYER 2  <audio> elements moved OUTSIDE <a-assets> (see body)
+           A-Frame tracks every element inside <a-assets> with loadeddata/error
+           listeners.  Audio with preload="none" never fires loadeddata — that
+           alone is enough to stall the counter forever.  Elements outside
+           <a-assets> are plain DOM nodes; A-Frame's sound component finds them
+           by ID (document.querySelector) and doesn't need them in the pipeline.
+
+         LAYER 3  This script — programmatic last resort
+           If the scene has not emitted 'loaded' within 8 seconds of the DOM
+           being ready:
+             a) Directly hides the A-Frame loading overlay div (covers any
+                version of A-Frame's loader class naming).
+             b) Sets scene.hasLoaded = true and emits 'loaded' on the scene
+                element itself — the same thing A-Frame does internally.
+           The renderer is already running by then (it starts independently of
+           the asset pipeline), so graphics appear immediately.
+    -->
+    <script>
+      (function () {
+        var SAFETY_MS = 8000; // ms before force-dismissing the loader
+
+        function forceReady () {
+          // Hide every element that looks like an A-Frame loading overlay.
+          // A-Frame has used multiple class/id names across versions; cover all.
+          var selectors = [
+            '.a-loader-title',
+            '#loading-screen',
+            '.a-loader',
+            '[data-aframe-generated-id]',
+          ];
+          selectors.forEach(function (sel) {
+            try {
+              document.querySelectorAll(sel).forEach(function (el) {
+                el.style.display = 'none';
+              });
+            } catch (e) {}
+          });
+
+          // Also emit 'loaded' on the scene element itself, in case some version
+          // of A-Frame's loader is listening for that rather than inspecting
+          // scene.hasLoaded directly.
+          var scene = document.querySelector('a-scene');
+          if (!scene) return;
+          if (!scene.hasLoaded) {
+            console.warn('[scriptorium] safety-net: forcing scene loaded after ' +
+                         SAFETY_MS + ' ms');
+            scene.hasLoaded = true;
+            // A-Frame uses both emit() and dispatchEvent() depending on version.
+            if (typeof scene.emit === 'function') scene.emit('loaded');
+            scene.dispatchEvent(new Event('loaded'));
+          }
+        }
+
+        document.addEventListener('DOMContentLoaded', function () {
+          var scene = document.querySelector('a-scene');
+          if (!scene) {
+            // Scene not yet in DOM (custom element not upgraded) — wait for it.
+            var obs = new MutationObserver(function () {
+              scene = document.querySelector('a-scene');
+              if (!scene) return;
+              obs.disconnect();
+              attachSafetyNet(scene);
+            });
+            obs.observe(document.body, { childList: true, subtree: true });
+          } else {
+            attachSafetyNet(scene);
+          }
+        });
+
+        function attachSafetyNet (scene) {
+          // If already loaded, nothing to do.
+          if (scene.hasLoaded) return;
+
+          var timer = setTimeout(forceReady, SAFETY_MS);
+
+          // Cancel the safety net if A-Frame loads normally first.
+          scene.addEventListener('loaded', function onLoaded () {
+            clearTimeout(timer);
+            scene.removeEventListener('loaded', onLoaded);
+          });
+        }
+      }());
+    </script>
+
     <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
    <script src="https://unpkg.com/aframe-environment-component@1.3.7/dist/aframe-environment-component.min.js"></script>
     <!-- Hand-tracking-controls extras: jointsAPI for XRHand joint positions/orientations -->
@@ -1803,30 +1895,34 @@
 
   <body>
 
+    <!-- ── Audio elements — intentionally OUTSIDE <a-assets> ───────────────────
+         A-Frame's asset system attaches loadeddata/error listeners to every node
+         inside <a-assets>.  Audio with preload="none" never fires loadeddata
+         (browsers enforce resource-load policies until a user gesture), so any
+         <audio> inside <a-assets> permanently blocks the asset counter and thus
+         the loading screen — regardless of <a-assets timeout>.
+         Placing these elements here (plain DOM nodes in <body>) means A-Frame's
+         sound component still resolves them by ID but they are invisible to the
+         asset-loading pipeline.  playback behaviour is identical. -->
+    <audio id="music-track"    src="chant.mp3"      preload="none"></audio>
+    <audio id="click-track"    src="click.mp3"      preload="none"></audio>
+    <audio id="pageturn-track" src="pageturn1.mp3"  preload="none"></audio>
+    <audio id="latin1-track"   src="latin1.mp3"     preload="none"></audio>
+    <audio id="english1-track" src="english1.mp3"   preload="none"></audio>
+    <audio id="latin2-track"   src="latin2.mp3"     preload="none"></audio>
+    <audio id="english2-track" src="english2.mp3"   preload="none"></audio>
+
     <a-scene scriptorium-logic renderer="antialias: true; colorManagement: true; useLegacyLights: false;">
 
-      <!-- timeout="10000": A-Frame 1.5+ removed the old 3000 ms default, so without
-           an explicit timeout the scene loading screen waits forever if any asset
-           returns a 404, a CORS block, or a network error that doesn't fire a proper
-           XHR/Audio error event (all three can happen with the GLB, images, and audio
-           in ordinary dev/local-server setups). After 10 s the scene fires 'loaded'
-           regardless; assets that finish after the timeout continue to update normally. -->
+      <!-- ── Asset pipeline — GLB and images only ─────────────────────────────
+           timeout="10000": safety valve for Layer 1.  If either asset 404s or
+           the XHR/img error event is swallowed, the scene fires 'loaded' after
+           10 s.  Audio has been moved outside so only 3 items are tracked here:
+           the GLB and the two folio images.  Both fire load or error reliably. -->
       <a-assets timeout="10000">
-        <!-- Medieval library room model — loaded before any interaction is possible -->
         <a-asset-item id="library-gltf" src="medievallibrary1.glb" response-type="arraybuffer"></a-asset-item>
         <img id="manuscript1" src="folio.jpg">
         <img id="manuscript2" src="folio2.jpg">
-        <!-- preload="none": browsers enforce autoplay/resource-load policies and will not
-             preload audio without a prior user gesture — loadeddata never fires, blocking
-             the asset pipeline. "none" tells the browser not to preload; the <audio> tags
-             are still used by A-Frame's sound component and play correctly on demand. -->
-        <audio id="music-track"    src="chant.mp3"      preload="none"></audio>
-        <audio id="click-track"    src="click.mp3"      preload="none"></audio>
-        <audio id="pageturn-track" src="pageturn1.mp3"  preload="none"></audio>
-        <audio id="latin1-track"   src="latin1.mp3"     preload="none"></audio>
-        <audio id="english1-track" src="english1.mp3"   preload="none"></audio>
-        <audio id="latin2-track"   src="latin2.mp3"     preload="none"></audio>
-        <audio id="english2-track" src="english2.mp3"   preload="none"></audio>
       </a-assets>
 
       <!-- ── Starry backdrop ─────────────────────────────────────────────────
