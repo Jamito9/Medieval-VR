@@ -1805,18 +1805,28 @@
 
     <a-scene scriptorium-logic renderer="antialias: true; colorManagement: true; useLegacyLights: false;">
 
-      <a-assets>
+      <!-- timeout="10000": A-Frame 1.5+ removed the old 3000 ms default, so without
+           an explicit timeout the scene loading screen waits forever if any asset
+           returns a 404, a CORS block, or a network error that doesn't fire a proper
+           XHR/Audio error event (all three can happen with the GLB, images, and audio
+           in ordinary dev/local-server setups). After 10 s the scene fires 'loaded'
+           regardless; assets that finish after the timeout continue to update normally. -->
+      <a-assets timeout="10000">
         <!-- Medieval library room model — loaded before any interaction is possible -->
         <a-asset-item id="library-gltf" src="medievallibrary1.glb" response-type="arraybuffer"></a-asset-item>
         <img id="manuscript1" src="folio.jpg">
         <img id="manuscript2" src="folio2.jpg">
-        <audio id="music-track"    src="chant.mp3"      preload="auto"></audio>
-        <audio id="click-track"    src="click.mp3"      preload="auto"></audio>
-        <audio id="pageturn-track" src="pageturn1.mp3"  preload="auto"></audio>
-        <audio id="latin1-track"   src="latin1.mp3"     preload="auto"></audio>
-        <audio id="english1-track" src="english1.mp3"   preload="auto"></audio>
-        <audio id="latin2-track"   src="latin2.mp3"     preload="auto"></audio>
-        <audio id="english2-track" src="english2.mp3"   preload="auto"></audio>
+        <!-- preload="none": browsers enforce autoplay/resource-load policies and will not
+             preload audio without a prior user gesture — loadeddata never fires, blocking
+             the asset pipeline. "none" tells the browser not to preload; the <audio> tags
+             are still used by A-Frame's sound component and play correctly on demand. -->
+        <audio id="music-track"    src="chant.mp3"      preload="none"></audio>
+        <audio id="click-track"    src="click.mp3"      preload="none"></audio>
+        <audio id="pageturn-track" src="pageturn1.mp3"  preload="none"></audio>
+        <audio id="latin1-track"   src="latin1.mp3"     preload="none"></audio>
+        <audio id="english1-track" src="english1.mp3"   preload="none"></audio>
+        <audio id="latin2-track"   src="latin2.mp3"     preload="none"></audio>
+        <audio id="english2-track" src="english2.mp3"   preload="none"></audio>
       </a-assets>
 
       <!-- ── Starry backdrop ─────────────────────────────────────────────────
