@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8">
     <title>Medieval Scriptorium – Test Cockpit Build</title>
-    <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
-   <script src="https://unpkg.com/aframe-environment-component@1.3.3/dist/aframe-environment-component.min.js"></script>
+    <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
+   <script src="https://unpkg.com/aframe-environment-component@1.3.7/dist/aframe-environment-component.min.js"></script>
     <script>
 
       AFRAME.registerComponent('look-at-user', {
@@ -22,6 +22,73 @@
         }
       });
 
+      // ── Shared haptic helper ──────────────────────────────────────────────────
+      // Two-attempt strategy for reliable haptics with hand-controls on Quest 2.
+      //
+      // Attempt 1 — tracked-controls component chain:
+      //   hand-controls dynamically injects oculus-touch-controls, which injects
+      //   tracked-controls.  tracked-controls.controller is the XRInputSource;
+      //   controller.gamepad is the Gamepad.  Wrapped in try/catch because the
+      //   hapticActuators API can throw on some Meta browser versions.
+      //   Both the older hapticActuators[0].pulse() and the newer
+      //   vibrationActuator.playEffect() are tried in order.
+      //
+      // Attempt 2 — navigator.getGamepads() scan:
+      //   If the component chain is not yet populated (can happen in the first
+      //   few frames after entering VR), fall back to iterating the raw Gamepad
+      //   array and matching by the 'Left'/'Right' substring in the gamepad id.
+      //   getAttribute('hand-controls') returns the parsed schema object, so
+      //   .hand is 'left' or 'right' directly.
+      function pulseHaptic (ctrlEl, intensity, duration) {
+        if (!ctrlEl) return;
+
+        // Attempt 1: tracked-controls component path
+        const tc = ctrlEl.components && ctrlEl.components['tracked-controls'];
+        if (tc && tc.controller) {
+          const gp = tc.controller.gamepad;
+          if (gp) {
+            if (gp.hapticActuators && gp.hapticActuators.length > 0) {
+              try { gp.hapticActuators[0].pulse(intensity, duration); return; } catch (e) {}
+            }
+            if (gp.vibrationActuator) {
+              try {
+                gp.vibrationActuator.playEffect('dual-rumble', {
+                  startDelay: 0, duration: duration,
+                  weakMagnitude: intensity, strongMagnitude: intensity
+                });
+                return;
+              } catch (e) {}
+            }
+          }
+        }
+
+        // Attempt 2: navigator.getGamepads() scan matched by hand label
+        const handData = ctrlEl.getAttribute('hand-controls');
+        if (!handData) return;
+        const hand = handData.hand;
+        if (!hand) return;
+        const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+        for (let i = 0; i < gamepads.length; i++) {
+          const gp = gamepads[i];
+          if (!gp || !gp.connected) continue;
+          const idLower = gp.id.toLowerCase();
+          const matches = hand === 'left' ? idLower.includes('left') : idLower.includes('right');
+          if (!matches) continue;
+          if (gp.hapticActuators && gp.hapticActuators.length > 0) {
+            try { gp.hapticActuators[0].pulse(intensity, duration); return; } catch (e) {}
+          }
+          if (gp.vibrationActuator) {
+            try {
+              gp.vibrationActuator.playEffect('dual-rumble', {
+                startDelay: 0, duration: duration,
+                weakMagnitude: intensity, strongMagnitude: intensity
+              });
+              return;
+            } catch (e) {}
+          }
+        }
+      }
+
       AFRAME.registerComponent('vr-locomotion', {
         init: function () {
           this.isVR      = false;
@@ -34,8 +101,8 @@
           scene.addEventListener('enter-vr', () => { this.isVR = true;  });
           scene.addEventListener('exit-vr',  () => { this.isVR = false; });
           scene.addEventListener('loaded', () => {
-            this.leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
-            this.rightCtrl = document.querySelector('[laser-controls="hand: right"]');
+            this.leftCtrl  = document.querySelector('#left-hand');
+            this.rightCtrl = document.querySelector('#right-hand');
           });
         },
         _getGamepad: function (ctrl) {
@@ -71,6 +138,7 @@
             if (Math.abs(stickX) > 0.6 && !this._snapUsed) {
               const snapRad = stickX > 0 ? -THREE.MathUtils.degToRad(45) : THREE.MathUtils.degToRad(45);
               this.el.object3D.rotation.y += snapRad;
+              pulseHaptic(this.rightCtrl, 0.5, 40);
               this._snapUsed = true;
             } else if (Math.abs(stickX) < 0.3) {
               this._snapUsed = false;
@@ -86,12 +154,7 @@
           this.previousControllerPos = new THREE.Vector3();
           this.currentControllerPos  = new THREE.Vector3();
           this.triggerHaptic = (intensity, duration) => {
-            if (this.activeController && this.activeController.components['tracked-controls']) {
-              const controller = this.activeController.components['tracked-controls'].controller;
-              if (controller && controller.gamepad && controller.gamepad.hapticActuators.length > 0) {
-                controller.gamepad.hapticActuators[0].pulse(intensity, duration);
-              }
-            }
+            pulseHaptic(this.activeController, intensity, duration);
           };
           this.el.sceneEl.addEventListener('enter-vr', () => { this.isVR = true;  });
           this.el.sceneEl.addEventListener('exit-vr',  () => { this.isVR = false; });
@@ -126,14 +189,284 @@
       AFRAME.registerComponent('haptic-button', {
         init: function () {
           this.el.addEventListener('mousedown', (evt) => {
-            const controller = evt.detail.cursorEl;
-            if (controller && controller.components['tracked-controls']) {
-              const gamepad = controller.components['tracked-controls'].controller.gamepad;
-              if (gamepad && gamepad.hapticActuators.length > 0) {
-                gamepad.hapticActuators[0].pulse(0.4, 30);
+            pulseHaptic(evt.detail && evt.detail.cursorEl, 0.4, 30);
+          });
+        }
+      });
+
+      // ── wrist-offset ─────────────────────────────────────────────────────────
+      // Corrects the hand model's position and rotation so the virtual wrist sits
+      // at the Quest 2 controller's physical tracking origin rather than floating
+      // above it.  Fires once after model-loaded (and again on any hot-reload) by
+      // nudging the first non-Bone child of the entity's object3D — the pivot Object3D
+      // that oculus-touch-controls creates to hold the GLB hand mesh.
+      //
+      // oculus-touch-controls already applies a base pivot rotation (≈40°) to match
+      // the controller grip angle; our offset is additive, so it does not overwrite
+      // the base pose — it only fine-tunes the wrist seat.
+      //
+      // Quest 2 empirical values (matching Meta's reference controller geometry):
+      //   posOffset  (0, −0.015, 0.04) m  — 1.5 cm down, 4 cm forward from grip origin
+      //   rotOffset  −35° on X           — tilts the model forward along the controller body
+      //
+      // GC notes: posOffset and rotOffsetX are pre-allocated in init() and never
+      // reallocated.  _apply() is allocation-free.
+      AFRAME.registerComponent('wrist-offset', {
+        init: function () {
+          // Pre-allocate — reused in _apply(), never reallocated.
+          this._posOffset  = new THREE.Vector3(0, -0.015, 0.04);
+          this._rotOffsetX = THREE.MathUtils.degToRad(-35);
+
+          this._apply = this._apply.bind(this);
+          this.el.addEventListener('model-loaded', this._apply);
+          // Defensive: apply immediately if the model is already loaded (hot-reload).
+          this._apply();
+        },
+
+        _apply: function () {
+          const root = this.el.object3D;
+          if (!root.children.length) return;
+          for (let i = 0; i < root.children.length; i++) {
+            const child = root.children[i];
+            // Skip skeleton bones — they are not the model pivot.
+            if (child.isBone) continue;
+            // Apply additive correction to the pivot.
+            // position.add() and rotation.x += are both mutation-free allocations.
+            child.position.add(this._posOffset);
+            child.rotation.x += this._rotOffsetX;
+            return; // Only the first non-Bone child is the model pivot.
+          }
+        },
+
+        remove: function () {
+          this.el.removeEventListener('model-loaded', this._apply);
+        }
+      });
+
+      // ── hand-finger-curl ──────────────────────────────────────────────────────
+      // Reads analog gamepad values each tick and drives individual finger bone
+      // rotations so finger curl is proportional to how hard the user squeezes.
+      //
+      // Quest 2 Oculus Touch button layout (WebXR Gamepad API):
+      //   buttons[0].value  — index trigger   ANALOG 0–1
+      //   buttons[1].value  — grip trigger     ANALOG 0–1
+      //   buttons[3].touched— thumbstick touch CAPACITIVE BOOL
+      //   buttons[4].touched— A (right) / X (left) CAPACITIVE BOOL
+      //   buttons[5].touched— B (right) / Y (left) CAPACITIVE BOOL
+      //
+      // Finger ↔ input:
+      //   Index             → buttons[0].value  (index trigger, analog)
+      //   Middle/Ring/Pinky → buttons[1].value  (side grip, analog)
+      //   Thumb             → capacitive: any of buttons[3/4/5] touched or pressed
+      //
+      // Bone discovery:
+      //   On model-loaded, traverses the entity's object3D looking for THREE.Bone
+      //   nodes whose names contain recognisable finger keywords (case-insensitive).
+      //   Works for all A-Frame 1.x GLB hand model naming conventions:
+      //     thumb0_l / thumb1_l / thumb2_l
+      //     f_index.01 / f_index.02
+      //     index_proximal / index_intermediate / index_distal
+      //   Bones are sorted proximal→distal by extracting the first integer from the
+      //   name, falling back to keyword detection (proximal/intermediate/distal).
+      //   A console.log lists what was found so the mapping can be verified.
+      //   If no bones are found (legacy OBJ lowPoly without skeleton), a warning
+      //   is logged and the component no-ops safely.
+      //
+      // Curl direction:
+      //   A-Frame's GLB hand models follow the Blender Y-up bone convention: each
+      //   finger bone's long axis is local +Y.  Curling toward the palm is a
+      //   rotation around local +Z.  Sign is −1 for the right hand (+1 for left)
+      //   because the left-hand model is the right-hand model mirrored on X,
+      //   reversing the Z-curl chirality.
+      //   If the curl goes the wrong way on your specific model, swap
+      //   this._sign in init(), or swap the axis to (1,0,0).
+      //
+      // GC notes:
+      //   All THREE scratch objects are pre-allocated in init().  The hot path
+      //   (tick + _applyCurl) is allocation-free.
+      AFRAME.registerComponent('hand-finger-curl', {
+
+        init: function () {
+          this.bones = { thumb: [], index: [], middle: [], ring: [], pinky: [] };
+          this.ready = false;
+
+          const hc    = this.el.getAttribute('hand-controls');
+          this.hand   = (hc && hc.hand) ? hc.hand : 'right';
+
+          // Pre-allocate scratch objects — reused every tick, never reallocated.
+          this._curlQuat   = new THREE.Quaternion();
+          this._targetQuat = new THREE.Quaternion();
+          // Curl axis is always local Z.  Set once here, never mutated.
+          this._axis       = new THREE.Vector3(0, 0, 1);
+          // Right-hand curl is negative Z (inward toward palm).
+          // Left-hand GLB is mirrored, so positive Z curls inward.
+          this._sign = (this.hand === 'right') ? -1 : 1;
+
+          this.el.addEventListener('model-loaded', () => { this._findBones(); });
+          // Defensive fallback: if model is already present when this component
+          // is attached (e.g. hot-reload), _findBones will find bones immediately.
+          this._findBones();
+        },
+
+        _findBones: function () {
+          // Reset from any previous model.
+          for (const k of Object.keys(this.bones)) this.bones[k] = [];
+          this.ready = false;
+
+          const PATTERNS = {
+            thumb:  /thumb/i,
+            index:  /index/i,
+            middle: /middle/i,
+            ring:   /ring/i,
+            pinky:  /pinky|little/i
+          };
+
+          // Walk the full scene graph; collect every THREE.Bone by finger.
+          this.el.object3D.traverse(function (node) {
+            if (!node.isBone) return;
+            var name = node.name;
+            for (var finger in PATTERNS) {
+              if (PATTERNS[finger].test(name)) {
+                this.bones[finger].push(node);
+                break;
               }
             }
-          });
+          }.bind(this));
+
+          // Sort proximal → distal within each finger.
+          // Primary key: first integer in the name (thumb0 < thumb1 < thumb2).
+          // Fallback key: anatomical keyword (metacarpal < proximal < intermediate
+          //               < distal < tip) for names like 'index_proximal'.
+          var WORD_PRI = {
+            meta: 0, carpal: 0, proximal: 1,
+            intermediate: 2, distal: 3, tip: 4
+          };
+          var sortKey = function (name) {
+            var m = name.match(/\d+/);
+            if (m) return parseInt(m[0]);
+            var lo = name.toLowerCase();
+            for (var w in WORD_PRI) {
+              if (lo.indexOf(w) !== -1) return WORD_PRI[w];
+            }
+            return 99;
+          };
+          for (var finger in this.bones) {
+            this.bones[finger].sort(function (a, b) {
+              return sortKey(a.name) - sortKey(b.name);
+            });
+          }
+
+          // Snapshot the rest-pose quaternion for every bone immediately after
+          // model load, before hand-controls has ticked and animated anything.
+          // Curl is always computed relative to this rest pose so the two
+          // systems don't drift over time.
+          for (var finger in this.bones) {
+            var arr = this.bones[finger];
+            for (var i = 0; i < arr.length; i++) {
+              arr[i].userData.restQuat = arr[i].quaternion.clone();
+            }
+          }
+
+          var total = 0;
+          for (var k in this.bones) total += this.bones[k].length;
+
+          if (total > 0) {
+            this.ready = true;
+            var summary = {};
+            for (var f in this.bones) {
+              summary[f] = this.bones[f].map(function (b) { return b.name; });
+            }
+            console.log('[hand-finger-curl] ' + this.hand + ' — ' + total +
+              ' bones mapped:', summary);
+          } else {
+            console.warn('[hand-finger-curl] ' + this.hand +
+              ' — no bones found. The lowPoly OBJ model has no skeleton; ' +
+              'set handModelStyle: highPoly for analog finger curl.');
+          }
+        },
+
+        // Resolve the Gamepad for this hand.  Mirrors pulseHaptic's two-attempt
+        // strategy: tracked-controls chain first, navigator.getGamepads() scan
+        // second (handles the first few frames before XR input sources are bound).
+        _getGamepad: function () {
+          var tc = this.el.components['tracked-controls'];
+          if (tc && tc.controller && tc.controller.gamepad) {
+            return tc.controller.gamepad;
+          }
+          if (!navigator.getGamepads) return null;
+          var pads = navigator.getGamepads();
+          for (var i = 0; i < pads.length; i++) {
+            var gp = pads[i];
+            if (!gp || !gp.connected) continue;
+            var id = gp.id.toLowerCase();
+            if (this.hand === 'left'  && id.indexOf('left')  !== -1) return gp;
+            if (this.hand === 'right' && id.indexOf('right') !== -1) return gp;
+          }
+          return null;
+        },
+
+        // Drive curl for one finger's bone chain.
+        //   bones — THREE.Bone[] ordered proximal→distal
+        //   value — 0.0 (fully open) to 1.0 (fully curled)
+        //   dt    — frame delta ms (for frame-rate-independent slerp)
+        _applyCurl: function (bones, value, dt) {
+          if (!bones.length) return;
+
+          // Max curl angle per joint (radians).
+          // Proximal phalanx curls most (~74°); distal/tip curls least (~46°).
+          var MAX_ANGLE = [1.3, 1.15, 1.0, 0.8];
+
+          // Normalise lerp to Quest 2's native 72 Hz (13.89 ms/frame).
+          // At 72 Hz lerps 25% per frame → smooth ~4 frame reach.
+          // At 90 Hz slightly faster, which is fine for a responsive feel.
+          var lerpFactor = Math.min(1.0, 0.25 * (dt / 13.89));
+
+          for (var i = 0; i < bones.length; i++) {
+            var bone = bones[i];
+            var rest = bone.userData.restQuat;
+            if (!rest) continue;
+
+            var angle = value *
+              MAX_ANGLE[i < MAX_ANGLE.length ? i : MAX_ANGLE.length - 1] *
+              this._sign;
+
+            // Build the curl quaternion in-place (no allocation).
+            this._curlQuat.setFromAxisAngle(this._axis, angle);
+
+            // target = rest ⊗ curl
+            // Post-multiplying applies curl in the bone's own local frame,
+            // which is the correct space for anatomical finger rotation.
+            this._targetQuat.multiplyQuaternions(rest, this._curlQuat);
+
+            // Slerp toward target.  bone.quaternion is modified in-place.
+            bone.quaternion.slerp(this._targetQuat, lerpFactor);
+          }
+        },
+
+        tick: function (t, dt) {
+          if (!this.ready) return;
+          var gp = this._getGamepad();
+          if (!gp) return;
+
+          // Analog values clamped 0–1.
+          var trigger = gp.buttons[0] ? Math.max(0, Math.min(1, gp.buttons[0].value)) : 0;
+          var grip    = gp.buttons[1] ? Math.max(0, Math.min(1, gp.buttons[1].value)) : 0;
+
+          // Capacitive thumb: curl whenever the thumbstick (3), A/X (4), or B/Y (5)
+          // registers a touch OR press event.  This mirrors the Quest 2's capacitive
+          // sensor behaviour — the thumb curls as soon as it rests on any surface.
+          // The binary 0/1 target is slerped by _applyCurl for smooth transitions.
+          var thumb = (
+            (gp.buttons[3] && (gp.buttons[3].touched || gp.buttons[3].pressed)) ||
+            (gp.buttons[4] && (gp.buttons[4].touched || gp.buttons[4].pressed)) ||
+            (gp.buttons[5] && (gp.buttons[5].touched || gp.buttons[5].pressed))
+          ) ? 1.0 : 0.0;
+
+          this._applyCurl(this.bones.thumb,  thumb,   dt);
+          this._applyCurl(this.bones.index,  trigger, dt);
+          this._applyCurl(this.bones.middle, grip,    dt);
+          this._applyCurl(this.bones.ring,   grip,    dt);
+          this._applyCurl(this.bones.pinky,  grip,    dt);
         }
       });
 
@@ -156,6 +489,49 @@
           this._mouseX            = 0;
           this._savedTexMap       = null;
           this._skipFirstCurlTick = false;
+
+          // ── Gesture-grab state (VR only) ───────────────────────────────────────
+          // These are populated on scene load and used by tick() for proximity-based
+          // curl initiation and continuous haptic feedback.
+          this._lastHapticTime    = 0;                    // timestamp — throttles peel rumble
+          this._cornerWorldPos    = new THREE.Vector3();  // scratch — corner proximity test
+          this._grabCooldown      = 0;                    // ms remaining — prevents instant re-grab
+          this._rightCtrl         = null;                 // resolved on scene 'loaded'
+          this._leftCtrl          = null;
+          this._isHotspotTargeted = null;                 // interaction-guard helpers
+          this._isAudioHovered    = null;
+          this._startCurl         = null;                 // assigned below after startCurl is defined
+
+          // Pre-allocated gamepad resolver — mirrors pulseHaptic's two-attempt strategy.
+          // Defined once in init() so tick() never allocates new function objects per frame.
+          this._getGP = function (ctrl) {
+            if (!ctrl) return null;
+            var tc = ctrl.components && ctrl.components['tracked-controls'];
+            if (tc && tc.controller && tc.controller.gamepad) return tc.controller.gamepad;
+            if (!navigator.getGamepads) return null;
+            var hd   = ctrl.getAttribute('hand-controls');
+            var hand = hd && hd.hand;
+            if (!hand) return null;
+            var pads = navigator.getGamepads();
+            for (var i = 0; i < pads.length; i++) {
+              var gp = pads[i];
+              if (!gp || !gp.connected) continue;
+              var id = gp.id.toLowerCase();
+              if (hand === 'left'  && id.indexOf('left')  !== -1) return gp;
+              if (hand === 'right' && id.indexOf('right') !== -1) return gp;
+            }
+            return null;
+          };
+
+          // Pre-allocated squeeze resolver — returns the greater of index trigger
+          // (buttons[0]) and side grip (buttons[1]), clamped 0–1.
+          // Defined once in init() so tick() is allocation-free on the hot path.
+          this._squeezeVal = function (gp) {
+            if (!gp) return 0;
+            var trigger = gp.buttons[0] ? Math.max(0, Math.min(1, gp.buttons[0].value)) : 0;
+            var grip    = gp.buttons[1] ? Math.max(0, Math.min(1, gp.buttons[1].value)) : 0;
+            return Math.max(trigger, grip);
+          };
 
           // Texture cache: populated at scene load via THREE.TextureLoader.
           // Key = asset selector string e.g. '#manuscript1'.
@@ -193,6 +569,9 @@
               if (!url) return;
               this._texLoader.load(url, (tex) => {
                 // THREE.TextureLoader default flipY=true is correct for standard WebGL.
+                // Three.js r152+ (A-Frame 1.5+): manually-loaded textures default to
+                // NoColorSpace; declare sRGB so colours are gamma-decoded on-screen.
+                tex.colorSpace = 'srgb';
                 this._texCache[page.src] = tex;
               });
             });
@@ -305,6 +684,9 @@
             const imgEl = document.querySelector(destSrc);
             if (imgEl && (imgEl.complete || imgEl.naturalWidth > 0)) {
               const tex = new THREE.Texture(imgEl);
+              // Three.js r152+ (A-Frame 1.5+): new THREE.Texture() defaults to
+              // NoColorSpace; set sRGB explicitly for correct on-screen colours.
+              tex.colorSpace = 'srgb';
               tex.needsUpdate = true;
               applyTex(tex);
             }
@@ -315,7 +697,11 @@
 
           this._completeCurl = () => {
             playPageTurn();
+            const capturedCtrl   = this.activeController;
             this.activeController = null;
+            // High-intensity commit pulse synchronised with the page-turn audio — both
+            // land on the same frame so the tactile and auditory cues reinforce each other.
+            pulseHaptic(capturedCtrl, 0.8, 60);
             const startProg      = this.peelProgress;
             const capturedSide   = this.curlSide;
             const startTime      = performance.now();
@@ -371,7 +757,14 @@
           };
 
           this._snapBack = () => {
+            const capturedCtrl   = this.activeController;
             this.activeController = null;
+            // Flutter cascade: four rapid, diminishing pulses simulate the spring-back
+            // of paper tension releasing — felt as a high-frequency "flutter" effect.
+            pulseHaptic(capturedCtrl, 0.25, 15);
+            setTimeout(() => pulseHaptic(capturedCtrl, 0.20, 12),  45);
+            setTimeout(() => pulseHaptic(capturedCtrl, 0.15, 10),  90);
+            setTimeout(() => pulseHaptic(capturedCtrl, 0.10,  8), 135);
             const startProg    = this.peelProgress;
             const capturedSide = this.curlSide;
             const startTime    = performance.now();
@@ -468,6 +861,8 @@
             this.curlSide             = side;
             this.peelProgress         = 0;
             this.activeController     = controllerEl || null;
+            // Short, sharp pulse the moment the grab registers — initial contact confirmation.
+            pulseHaptic(this.activeController, 0.5, 20);
 
             if (this.activeController) {
               this.activeController.object3D.getWorldPosition(this._ctrlPos);
@@ -479,6 +874,8 @@
             this.updateCurl(0, side);
             this._watchdog = setTimeout(() => { if (this.isCurling) { this.resetCurl(); } }, 3500);
           };
+          // Expose startCurl so the tick() gesture-detection loop can call it.
+          this._startCurl = startCurl;
 
           this._onMouseMoveCurl = (e) => {
             if (!this.isCurling || this.isVR) return;
@@ -511,16 +908,26 @@
             startCurl('left', null);
           });
 
+          // Gesture-grab setup: store controller refs and interaction-guard helpers
+          // that tick() needs. The A/X button listeners for curl are intentionally
+          // removed — curl initiation is now driven purely by physical proximity and
+          // trigger/grip squeeze, detected every tick in the VR grab-detection phase.
           scene.addEventListener('loaded', () => {
-            const rightCtrl = document.querySelector('[laser-controls="hand: right"]');
-            const leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
+            const rightCtrl = document.querySelector('#right-hand');
+            const leftCtrl  = document.querySelector('#left-hand');
+            this._rightCtrl = rightCtrl;
+            this._leftCtrl  = leftCtrl;
 
-            const isHotspotTargeted = () => {
+            // Guard: blocks curl grab while a folio hotspot popup is targeted so
+            // the user can interact with info panels without accidentally turning the page.
+            this._isHotspotTargeted = () => {
               const hs = folio.components['folio-hotspots'];
               return hs && hs.targetedPanel !== null;
             };
 
-            const isAudioHovered = () => {
+            // Guard: blocks curl grab while either controller laser is hovering over
+            // an audio panel zone so the audio toggle takes priority over page curl.
+            this._isAudioHovered = () => {
               const ctrls = [rightCtrl, leftCtrl];
               for (const ctrl of ctrls) {
                 if (!ctrl) continue;
@@ -536,44 +943,6 @@
               }
               return false;
             };
-
-            // Curl must only fire when the controller laser is actually
-            // intersecting the folio — pressing A while pointing at empty space
-            // or at a non-folio entity must not start a curl (or play the sound).
-            const isFolioTargeted = (ctrl) => {
-              if (!ctrl) return false;
-              const rc = ctrl.components && ctrl.components.raycaster;
-              if (!rc || !rc.intersectedEls) return false;
-              return rc.intersectedEls.indexOf(folio) >= 0;
-            };
-
-            if (rightCtrl) {
-              rightCtrl.addEventListener('abuttondown', () => {
-                if (!this.isVR || this.isCurling) return;
-                if (isHotspotTargeted() || isAudioHovered()) return;
-                if (!isFolioTargeted(rightCtrl)) return;
-                startCurl('right', rightCtrl);
-              });
-              rightCtrl.addEventListener('abuttonup', () => {
-                if (!this.isCurling || !this.isVR || !this.activeController) return;
-                // Mirror desktop mouseup: only complete if peel has meaningful
-                // progress; otherwise snap back. This prevents the page-turn sound
-                // firing on any brief A press while pointing at the folio.
-                if (this.peelProgress >= 0.25) { this._completeCurl(); } else { this._snapBack(); }
-              });
-            }
-            if (leftCtrl) {
-              leftCtrl.addEventListener('xbuttondown', () => {
-                if (!this.isVR || this.isCurling) return;
-                if (isHotspotTargeted() || isAudioHovered()) return;
-                if (!isFolioTargeted(leftCtrl)) return;
-                startCurl('left', leftCtrl);
-              });
-              leftCtrl.addEventListener('xbuttonup', () => {
-                if (!this.isCurling || !this.isVR || !this.activeController) return;
-                if (this.peelProgress >= 0.25) { this._completeCurl(); } else { this._snapBack(); }
-              });
-            }
           });
         },
 
@@ -662,43 +1031,101 @@
           this.activeController  = null;
           this.peelProgress      = 0;
           this._savedTexMap      = null;
+          // Cooldown prevents the gesture-grab in tick() from immediately re-triggering
+          // if the user's hand is still near a corner and squeeze is still > threshold.
+          this._grabCooldown     = 400;
           this.shadowMat.opacity     = 0;
           this.shadowMesh.scale.x    = 1;
           this.shadowMesh.position.x = 0;
         },
 
-        tick: function () {
-          if (!this.isCurling || !this.isVR || !this.activeController) return;
-          const tc = this.activeController.components &&
-                     this.activeController.components['tracked-controls'];
-          if (!tc || !tc.controller || !tc.controller.gamepad) return;
-          const gp  = tc.controller.gamepad;
-          const btn = gp.buttons[4];
+        tick: function (t, dt) {
+          if (!this.isVR) return;
+
+          // ── Grab cooldown ─────────────────────────────────────────────────────────
+          // Prevents the proximity detector from immediately re-triggering a new curl
+          // the instant resetCurl() fires (user's hand may still be near the corner).
+          if (this._grabCooldown > 0) {
+            this._grabCooldown -= (dt || 16);
+            return;
+          }
+
+          // ── Phase 1: Not curling — detect a fresh gesture grab ────────────────────
+          // A grab registers when a controller is within CORNER_REACH of a folio
+          // corner entity AND squeezing above GRAB_THRESHOLD.  No raycaster
+          // intersection required — physical proximity drives initiation so the user
+          // can reach out and grab the page naturally in 6DoF space.
+          if (!this.isCurling) {
+            if (!this._startCurl || (!this._rightCtrl && !this._leftCtrl)) return;
+
+            const GRAB_THRESHOLD = 0.50; // 50 % squeeze — deliberate grab, not accidental
+            const CORNER_REACH   = 0.18; // 18 cm world-space radius around each corner
+
+            const tryGrab = (ctrl, cornerEl, side) => {
+              if (!ctrl || !cornerEl) return;
+              const gp = this._getGP(ctrl);
+              if (!gp || this._squeezeVal(gp) < GRAB_THRESHOLD) return;
+              // Guard: hotspot and audio interactions take priority over page curl.
+              if (this._isHotspotTargeted && this._isHotspotTargeted()) return;
+              if (this._isAudioHovered    && this._isAudioHovered())    return;
+              // Proximity test in world space.
+              cornerEl.object3D.getWorldPosition(this._cornerWorldPos);
+              ctrl.object3D.getWorldPosition(this._ctrlPos);
+              if (this._cornerWorldPos.distanceTo(this._ctrlPos) <= CORNER_REACH) {
+                this._startCurl(side, ctrl);
+              }
+            };
+
+            tryGrab(this._rightCtrl, this.rightCorner, 'right');
+            // Only check left if right didn't already initiate a curl.
+            if (!this.isCurling) tryGrab(this._leftCtrl, this.leftCorner, 'left');
+            return;
+          }
+
+          // ── Phase 2: Active curl — guard controller availability ──────────────────
+          if (!this.activeController) return;
+
+          // ── Phase 3: One-frame skip after startCurl ───────────────────────────────
+          // On the frame startCurl fires, squeezeVal is already ≥ GRAB_THRESHOLD.
+          // Skipping one tick lets analog values settle so we don't misread a transient
+          // dip as a release and immediately fire _completeCurl on the entry frame.
           if (this._skipFirstCurlTick) {
-            // Skip button check on the first tick after startCurl.
-            // On Quest 2 the gamepad state may not yet reflect the button
-            // being held on the same frame as abuttondown, causing tick to
-            // see !btn.pressed and immediately fire _completeCurl (and the
-            // page turn sound) on the press frame rather than the release frame.
             this._skipFirstCurlTick = false;
-          } else if (btn && !btn.pressed) {
-            // Null the controller before the branch so abuttonup/xbuttonup
-            // events that may fire in the same JS turn cannot double-trigger.
+            return;
+          }
+
+          // ── Phase 4: Release detection (hysteresis threshold = 0.15) ─────────────
+          // Threshold is lower than GRAB_THRESHOLD (0.50) to prevent jitter at the
+          // boundary and give the user a clear squeeze → hold → release gesture model.
+          const gp = this._getGP(this.activeController);
+          if (!gp || this._squeezeVal(gp) < 0.15) {
+            // Null the controller first — prevents queued events from double-firing.
             this.activeController = null;
             if (this.peelProgress >= 0.25) { this._completeCurl(); } else { this._snapBack(); }
             return;
           }
+
+          // ── Phase 5: Curl progress from lateral hand displacement ─────────────────
           this.activeController.object3D.getWorldPosition(this._ctrlPos);
           const deltaX      = this._ctrlPos.x - this.startX;
           const sensitivity = 4.0;
-          let newProgress;
-          if (this.curlSide === 'right') {
-            newProgress = Math.max(0, Math.min(1, -deltaX * sensitivity));
-          } else {
-            newProgress = Math.max(0, Math.min(1,  deltaX * sensitivity));
-          }
+          const newProgress = this.curlSide === 'right'
+            ? Math.max(0, Math.min(1, -deltaX * sensitivity))
+            : Math.max(0, Math.min(1,  deltaX * sensitivity));
           this.peelProgress = newProgress;
           this.updateCurl(this.peelProgress, this.curlSide);
+
+          // ── Phase 6: Peel-resistance haptic ──────────────────────────────────────
+          // Throttled to ≥60 ms between pulses to avoid saturating the Quest 2
+          // haptic actuator.  Intensity scales with peelProgress: the more page is
+          // lifted, the heavier the resistance feels in the hand.
+          //   progress 0.0 → 0.10 intensity  (barely perceptible initial peel)
+          //   progress 0.5 → 0.25 intensity  (clear mid-turn paper resistance)
+          //   progress 1.0 → 0.40 intensity  (maximum pre-commit tension)
+          if (t - this._lastHapticTime >= 60) {
+            this._lastHapticTime = t;
+            pulseHaptic(this.activeController, 0.1 + (this.peelProgress * 0.3), 50);
+          }
         },
 
         remove: function () {
@@ -816,8 +1243,8 @@
 
           folio.addEventListener('click', () => { if (!this.isVR) toggle(); });
           scene.addEventListener('loaded', () => {
-            this.rightCtrl     = document.querySelector('[laser-controls="hand: right"]');
-            this.leftCtrl      = document.querySelector('[laser-controls="hand: left"]');
+            this.rightCtrl     = document.querySelector('#right-hand');
+            this.leftCtrl      = document.querySelector('#left-hand');
             this.desktopCursor = document.querySelector('#cursor');
             if (this.rightCtrl) this.rightCtrl.addEventListener('abuttondown', toggle);
             if (this.leftCtrl)  this.leftCtrl.addEventListener('xbuttondown',  toggle);
@@ -877,13 +1304,10 @@
           zone.setAttribute('material', 'opacity: 0; transparent: true; side: double');
           zone.classList.add('clickable');
           panel.appendChild(zone);
-          const pulseHaptic = (evt) => {
-            const ctrl = evt && evt.detail && evt.detail.cursorEl; if (!ctrl) return;
-            const tc   = ctrl.components && ctrl.components['tracked-controls']; if (!tc) return;
-            const gp   = tc.controller && tc.controller.gamepad;
-            if (gp && gp.hapticActuators && gp.hapticActuators.length > 0) gp.hapticActuators[0].pulse(0.65, 80);
+          const pulseAudioHaptic = (evt) => {
+            pulseHaptic(evt && evt.detail && evt.detail.cursorEl, 0.65, 80);
           };
-          zone.addEventListener('mouseenter', (evt) => { isTargeted = true;  pulseHaptic(evt); });
+          zone.addEventListener('mouseenter', (evt) => { isTargeted = true;  pulseAudioHaptic(evt); });
           zone.addEventListener('mouseleave', ()     => { isTargeted = false; });
           const getAudio = () => {
             const pages = scene.pages; if (!pages) return null;
@@ -902,8 +1326,8 @@
             else { audio.pause(); audio.currentTime = 0; scene.currentPanelAudio = null; }
           };
           scene.addEventListener('loaded', () => {
-            const rightCtrl = document.querySelector('[laser-controls="hand: right"]');
-            const leftCtrl  = document.querySelector('[laser-controls="hand: left"]');
+            const rightCtrl = document.querySelector('#right-hand');
+            const leftCtrl  = document.querySelector('#left-hand');
             if (rightCtrl) rightCtrl.addEventListener('abuttondown', toggle);
             if (leftCtrl)  leftCtrl.addEventListener('xbuttondown',  toggle);
           });
@@ -1061,7 +1485,7 @@
 
   <body>
 
-    <a-scene scriptorium-logic renderer="antialias: true; colorManagement: true;">
+    <a-scene scriptorium-logic renderer="antialias: true; colorManagement: true; useLegacyLights: false;">
 
       <a-assets>
         <!-- Medieval library room model — loaded before any interaction is possible -->
@@ -1133,8 +1557,20 @@
                     animation__reset="property: scale; to: 0.4 0.4 0.4; dur: 500; startEvents: mouseleave;">
           </a-cursor>
         </a-entity>
-        <a-entity laser-controls="hand: left"  raycaster="objects: .clickable; far: 10;"></a-entity>
-        <a-entity laser-controls="hand: right" raycaster="objects: .clickable; far: 10;"></a-entity>
+        <a-entity id="left-hand"
+                  hand-controls="hand: left; handModelStyle: lowPoly; color: #c8956c"
+                  wrist-offset
+                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35; direction: 0 -0.643 -0.766;"
+                  cursor="fuse: false; downEvents: triggerdown; upEvents: triggerup"
+                  hand-finger-curl>
+        </a-entity>
+        <a-entity id="right-hand"
+                  hand-controls="hand: right; handModelStyle: lowPoly; color: #c8956c"
+                  wrist-offset
+                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35; direction: 0 -0.643 -0.766;"
+                  cursor="fuse: false; downEvents: triggerdown; upEvents: triggerup"
+                  hand-finger-curl>
+        </a-entity>
       </a-entity>
 
       <a-entity id="zoom-anchor" position="0 1.1 -1.4">
