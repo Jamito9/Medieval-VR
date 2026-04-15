@@ -30,75 +30,49 @@
     -->
     <script>
       (function () {
-        var SAFETY_MS = 8000; // ms before force-dismissing the loader
+        // Loading-screen safety net.
+        // If A-Frame has not fired 'loaded' within SAFETY_MS, force-dismiss the
+        // overlay and emit the event once — no more, no less.
+        //
+        // A-Frame 1.7.1 notes:
+        //   • scene.emit('loaded') already dispatches a CustomEvent on the DOM
+        //     element.  Do NOT also call scene.dispatchEvent(new Event('loaded'))
+        //     — that fires a second plain Event which re-triggers A-Frame's own
+        //     loader handler and re-shows the loading screen.
+        //   • '[data-aframe-generated-id]' matches A-Frame scene entities, NOT
+        //     the loading overlay.  That selector must not be used here.
+        //   • The correct overlay selectors are '.a-loader-title', '.a-loader',
+        //     and '#loading-screen'.
+        var SAFETY_MS = 8000;
 
-        function forceReady () {
-          // Hide every element that looks like an A-Frame loading overlay.
-          // A-Frame has used multiple class/id names across versions; cover all.
-          var selectors = [
-            '.a-loader-title',
-            '#loading-screen',
-            '.a-loader',
-            '[data-aframe-generated-id]',
-          ];
-          selectors.forEach(function (sel) {
+        function forceReady() {
+          ['.a-loader-title', '.a-loader', '#loading-screen'].forEach(function(sel) {
             try {
-              document.querySelectorAll(sel).forEach(function (el) {
-                el.style.display = 'none';
-              });
-            } catch (e) {}
+              document.querySelectorAll(sel).forEach(function(el) { el.style.display = 'none'; });
+            } catch(e) {}
           });
-
-          // Also emit 'loaded' on the scene element itself, in case some version
-          // of A-Frame's loader is listening for that rather than inspecting
-          // scene.hasLoaded directly.
           var scene = document.querySelector('a-scene');
-          if (!scene) return;
-          if (!scene.hasLoaded) {
-            console.warn('[scriptorium] safety-net: forcing scene loaded after ' +
-                         SAFETY_MS + ' ms');
-            scene.hasLoaded = true;
-            // A-Frame uses both emit() and dispatchEvent() depending on version.
-            if (typeof scene.emit === 'function') scene.emit('loaded');
-            scene.dispatchEvent(new Event('loaded'));
-          }
+          if (!scene || scene.hasLoaded) return;
+          console.warn('[scriptorium] safety-net fired after ' + SAFETY_MS + ' ms — check asset files.');
+          scene.hasLoaded = true;
+          if (typeof scene.emit === 'function') scene.emit('loaded');
+          // Do NOT call scene.dispatchEvent() again — scene.emit already did it.
         }
 
-        document.addEventListener('DOMContentLoaded', function () {
+        document.addEventListener('DOMContentLoaded', function() {
           var scene = document.querySelector('a-scene');
-          if (!scene) {
-            // Scene not yet in DOM (custom element not upgraded) — wait for it.
-            var obs = new MutationObserver(function () {
-              scene = document.querySelector('a-scene');
-              if (!scene) return;
-              obs.disconnect();
-              attachSafetyNet(scene);
-            });
-            obs.observe(document.body, { childList: true, subtree: true });
-          } else {
-            attachSafetyNet(scene);
-          }
-        });
-
-        function attachSafetyNet (scene) {
-          // If already loaded, nothing to do.
-          if (scene.hasLoaded) return;
-
+          if (!scene || scene.hasLoaded) return;
           var timer = setTimeout(forceReady, SAFETY_MS);
-
-          // Cancel the safety net if A-Frame loads normally first.
-          scene.addEventListener('loaded', function onLoaded () {
+          scene.addEventListener('loaded', function cancel() {
             clearTimeout(timer);
-            scene.removeEventListener('loaded', onLoaded);
+            scene.removeEventListener('loaded', cancel);
           });
-        }
+        });
       }());
     </script>
 
     <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
-   <script src="https://unpkg.com/aframe-environment-component@1.3.7/dist/aframe-environment-component.min.js"></script>
-    <!-- Hand-tracking-controls extras: jointsAPI for XRHand joint positions/orientations -->
-    <script src="https://gftruj.github.io/hand.tracking.controls.extras/dist/aframe-hand-tracking-controls-extras.js"></script>
+    <script src="https://unpkg.com/aframe-environment-component@1.3.7/dist/aframe-environment-component.min.js"></script>
     <script>
 
       AFRAME.registerComponent('look-at-user', {
@@ -575,113 +549,60 @@
       });
 
       // ── hand-tracking-pointer ─────────────────────────────────────────────────
-      // Bridges WebXR Hand Tracking (XRHand) into the existing raycaster/cursor
-      // interaction pipeline so bare-hand users on Quest 2 share the same clickable
-      // hotspot, button, and audio-panel interactions as controller users.
+      // Bridges WebXR Hand Tracking into the raycaster/cursor pipeline using the
+      // NATIVE WebXR Hand Input API.  No third-party library required.
       //
-      // RAY INJECTION STRATEGY
-      //   v174 patched rc.updateOrigin() — which does not exist in A-Frame 1.7.1
-      //   (the actual method is updateOrientation()).  The typeof guard silently
-      //   returned false, meaning the ray was NEVER overridden and hand-tracking
-      //   intersections never fired.
+      // A-Frame 1.7.1 notes
+      // ───────────────────
+      // • hand-tracking-controls-extras was for A-Frame ~1.3 and is incompatible.
+      //   All joint data is read via the W3C WebXR Hand Input spec:
+      //     src.hand.get(jointName)           → XRJointSpace
+      //     frame.getJointPose(space, ref)    → XRJointPose
+      //   sceneEl.frame is set by A-Frame 1.6+ during each render tick.
       //
-      //   v175 patches rc.tick directly.  In hand-tracking mode the patched tick:
-      //     1. Copies the smoothed joint ray into rc.raycaster.ray AND into
-      //        rc.origin/rc.direction (component-level vectors used by drawLine).
-      //     2. Calls rc.checkIntersections() — fires mouseenter/leave, updates
-      //        intersectedEls, exactly as in controller mode.
-      //     3. Calls rc.drawLine() if it exists — updates the visual pointer line.
-      //     4. Returns early, skipping updateOrientation (which would overwrite
-      //        our ray from the entity transform).
-      //   In controller/desktop mode the original tick runs unmodified.
+      // • rc.tick is patched (version-agnostic — avoids updateOrientation /
+      //   updateOrigin whose names differ across A-Frame builds).
       //
-      // EMA SMOOTHING
-      //   Raw XRHand joint positions are jittery at 72 Hz on Quest 2.  An
-      //   exponential moving average (alpha = 0.4) is applied to both origin and
-      //   direction on every valid frame.  Smoothing resets when tracking is lost
-      //   so the pointer snaps cleanly to the recovered position rather than
-      //   lerping from a stale location.
+      // • Pinch: index-tip ↔ thumb-tip < 25 mm → triggerdown (cursor picks it up
+      //   via downEvents: triggerdown).  Exit > 40 mm → triggerup.  300 ms cooldown.
       //
-      // PINCH → CLICK  (hysteresis + cooldown)
-      //   Enter  : thumb-tip ↔ index-tip < 25 mm  → emit 'triggerdown'
-      //   Exit   : distance > 40 mm               → emit 'triggerup'
-      //   Cooldown: 300 ms lockout after release prevents rapid re-fire.
-      //   _lastPinchDist is exposed so page-curl can derive a 0–1 "squeeze"
-      //   value without coupling to pinch state directly.
+      // • EMA alpha 0.4 smooths Quest 2 joint jitter (~1–3 mm/frame).
+      //   Resets on tracking loss so pointer snaps cleanly on recovery.
       //
-      // MODE DETECTION
-      //   Checks session.inputSources each tick for a source whose .hand is set
-      //   AND whose .handedness matches THIS component's hand side (left/right).
-      //   This prevents the left-hand pointer from activating when only the right
-      //   hand has tracking.
-      //
-      // VISUAL FEEDBACK
-      //   As the pinch distance closes from 60 mm → 25 mm, the pointer line
-      //   colour lerps from gold (#FFD700) to white and opacity rises to 1.0.
-      //   Colour and opacity are written directly to the Three.js LineBasicMaterial
-      //   (allocation-free; does not trigger A-Frame attribute update pipeline).
-      //
-      // GC NOTES
-      //   All THREE scratch objects are pre-allocated in init().  The hot path
-      //   (tick) is fully allocation-free.
+      // • _lastPinchDist is public: page-curl _combinedSqueeze reads it to derive
+      //   a 0–1 grab value for the gesture-grab system.
       AFRAME.registerComponent('hand-tracking-pointer', {
         dependencies: ['raycaster'],
 
         init: function () {
           const self = this;
 
-          // ── State ─────────────────────────────────────────────────────────
-          this.jointsAPI          = null;
           this.handTrackingActive = false;
           this._hasValidJoints    = false;
           this._hasSmoothing      = false;
           this.pinchActive        = false;
           this._pinchCooldown     = 0;
-          this._lastPinchDist     = 1.0;  // metres; exposed for page-curl squeeze
+          this._lastPinchDist     = 1.0; // metres, read by page-curl _combinedSqueeze
 
-          // Hand side: read once from hand-tracking-controls schema.
           this.hand = ((this.el.getAttribute('hand-tracking-controls') || {}).hand) || 'right';
 
-          // ── Pre-allocated scratch vectors ──────────────────────────────────
+          // Pre-allocated scratch — no heap allocation in tick().
           this._rawOrigin    = new THREE.Vector3();
           this._rawDir       = new THREE.Vector3();
           this._smoothOrigin = new THREE.Vector3();
           this._smoothDir    = new THREE.Vector3(0, 0, -1);
-          this._thumbPos     = new THREE.Vector3();
           this._tipPos       = new THREE.Vector3();
-          this._proxPos      = new THREE.Vector3();
+          this._thumbPos     = new THREE.Vector3();
+          this._colDefault   = new THREE.Color('#FFD700');
+          this._colPinch     = new THREE.Color('#ffffff');
+          this._opDefault    = 0.35;
 
-          // Line colour sentinels — pre-allocated, mutated in-place each tick.
-          this._lineDefaultColor   = new THREE.Color('#FFD700');
-          this._linePinchColor     = new THREE.Color('#ffffff');
-          this._lineDefaultOpacity = 0.35;
-
-          // ── jointsAPI acquisition ──────────────────────────────────────────
-          // Primary path: event from hand-tracking-extras.
-          this.el.addEventListener('hand-tracking-extras-ready', (evt) => {
-            this.jointsAPI = evt.detail.data.jointsAPI;
-            console.log('[hand-tracking-pointer] jointsAPI ready —', this.hand);
-          });
-          // Defensive fallback: if the event already fired before our listener
-          // was registered (hot-reload), read the component directly in tick.
-
-          // ── Patch rc.tick to inject finger ray ────────────────────────────
-          // We wrap tick rather than a named internal method because the method
-          // name has changed across A-Frame versions (updateOrientation in 1.4–1.7,
-          // updateOrigin in older forks).  Wrapping tick is version-agnostic.
-          //
-          // In hand-tracking mode we:
-          //   • Set rc.raycaster.ray directly (Three.js intersection source).
-          //   • Set rc.origin / rc.direction (A-Frame component vectors used by
-          //     drawLine to position the visual pointer line start/end).
-          //   • Call checkIntersections() then drawLine() and return early,
-          //     bypassing updateOrientation which would overwrite our ray.
-          // In controller/desktop mode the original tick runs unchanged.
+          // Patch rc.tick — version-agnostic (no reliance on internal method names).
           const rc = this.el.components.raycaster;
           if (rc) {
-            const _origTick = rc.tick.bind(rc);
-            rc.tick = function (t, dt) {
-              if (!self.el.isPlaying) return;
+            const origTick = rc.tick.bind(rc);
+            rc.tick = function(t, dt) {
+              if (!self.el.isPlaying) { origTick(t, dt); return; }
               if (self.handTrackingActive && self._hasValidJoints) {
                 rc.raycaster.ray.origin.copy(self._smoothOrigin);
                 rc.raycaster.ray.direction.copy(self._smoothDir);
@@ -691,165 +612,115 @@
                 if (typeof rc.drawLine === 'function') rc.drawLine();
                 return;
               }
-              _origTick(t, dt);
+              origTick(t, dt);
             };
           }
 
-          // ── Reset state on VR exit ─────────────────────────────────────────
-          this.el.sceneEl.addEventListener('exit-vr', () => {
-            this._setHandTrackingActive(false);
-          });
+          this.el.sceneEl.addEventListener('exit-vr', () => this._deactivate());
         },
 
-        // ── Helpers ──────────────────────────────────────────────────────────
-        // Central state-reset for hand-tracking deactivation.  Idempotent:
-        // calling with false when already false is a no-op.
-        _setHandTrackingActive: function (active) {
-          if (this.handTrackingActive === active) return;
-          this.handTrackingActive = active;
-          if (!active) {
-            this._hasValidJoints = false;
-            this._hasSmoothing   = false;
-            this._lastPinchDist  = 1.0;
-            this._pinchCooldown  = 0;
-            if (this.pinchActive) {
-              this.pinchActive = false;
-              this.el.emit('triggerup', {}, true);
-            }
-            // Restore pointer line to default gold / 0.35 opacity.
-            const lineComp = this.el.components.line;
-            if (lineComp && lineComp.material) {
-              lineComp.material.color.copy(this._lineDefaultColor);
-              lineComp.material.opacity = this._lineDefaultOpacity;
-            }
+        _deactivate: function() {
+          if (!this.handTrackingActive) return;
+          this.handTrackingActive = false;
+          this._hasValidJoints    = false;
+          this._hasSmoothing      = false;
+          this._lastPinchDist     = 1.0;
+          this._pinchCooldown     = 0;
+          if (this.pinchActive) {
+            this.pinchActive = false;
+            this.el.emit('triggerup', {}, true);
+          }
+          const lc = this.el.components.line;
+          if (lc && lc.material) {
+            lc.material.color.copy(this._colDefault);
+            lc.material.opacity = this._opDefault;
           }
         },
 
-        // ── Tick ─────────────────────────────────────────────────────────────
-        tick: function (t, dt) {
-
-          // Fallback jointsAPI acquisition: if the hand-tracking-extras-ready
-          // event fired before our listener was registered, the component will
-          // have the API available as a property.  Check once per tick until found.
-          if (!this.jointsAPI) {
-            const hte = this.el.components && this.el.components['hand-tracking-extras'];
-            if (hte && hte.jointsAPI) {
-              this.jointsAPI = hte.jointsAPI;
-              console.log('[hand-tracking-pointer] jointsAPI acquired via fallback —', this.hand);
-            } else {
-              return;
-            }
-          }
-
-          // ── Mode detection ─────────────────────────────────────────────────
-          // Check that THIS hand's XRInputSource has an active XRHand object.
-          // Using .handedness match prevents the left component activating when
-          // only the right hand has tracking (or vice-versa).
+        tick: function(t, dt) {
+          // Only activate for THIS hand's XRInputSource.
           const session = this.el.sceneEl.xrSession;
-          if (!session) { this._setHandTrackingActive(false); return; }
+          if (!session) { this._deactivate(); return; }
 
-          let thisHandTracked = false;
-          for (const src of session.inputSources) {
-            if (src.hand && src.handedness === this.hand) { thisHandTracked = true; break; }
+          let src = null;
+          for (const s of session.inputSources) {
+            if (s.hand && s.handedness === this.hand) { src = s; break; }
           }
-          if (!thisHandTracked) { this._setHandTrackingActive(false); return; }
-
+          if (!src) { this._deactivate(); return; }
           this.handTrackingActive = true;
 
-          // ── Pinch cooldown tick ────────────────────────────────────────────
-          if (this._pinchCooldown > 0) { this._pinchCooldown = Math.max(0, this._pinchCooldown - dt); }
+          if (this._pinchCooldown > 0) this._pinchCooldown = Math.max(0, this._pinchCooldown - dt);
 
-          // ── Sample finger joints ───────────────────────────────────────────
-          // All joint access is inside try/catch: XRHand joints are transiently
-          // unavailable when the hand is occluded or outside the tracking volume.
-          // On any failure we clear _hasValidJoints so the patched rc.tick falls
-          // back to the controller ray until valid data resumes.
+          // Native WebXR Hand Input API — sceneEl.frame is set by A-Frame 1.6+ each tick.
           try {
-            const indexProxJoint = this.jointsAPI.getIndexProximal();
-            const indexTipJoint  = this.jointsAPI.getIndexTip();
-            const thumbTipJoint  = this.jointsAPI.getThumbTip();
+            const frame    = this.el.sceneEl.frame;
+            const refSpace = this.el.sceneEl.renderer.xr.getReferenceSpace();
+            if (!frame || !refSpace) { this._hasValidJoints = false; return; }
 
-            if (!indexProxJoint || !indexTipJoint) { this._hasValidJoints = false; return; }
+            const xrHand     = src.hand;
+            const proxSpace  = xrHand.get('index-finger-phalanx-proximal');
+            const tipSpace   = xrHand.get('index-finger-tip');
+            const thumbSpace = xrHand.get('thumb-tip');
+            if (!proxSpace || !tipSpace) { this._hasValidJoints = false; return; }
 
-            const proxPos = indexProxJoint.getPosition();
-            const tipPos  = indexTipJoint.getPosition();
-            if (!proxPos || !tipPos) { this._hasValidJoints = false; return; }
+            const proxPose = frame.getJointPose(proxSpace, refSpace);
+            const tipPose  = frame.getJointPose(tipSpace,  refSpace);
+            if (!proxPose || !tipPose) { this._hasValidJoints = false; return; }
 
-            this._proxPos.copy(proxPos);
-            this._tipPos.copy(tipPos);
+            // DOMPointReadOnly → THREE.Vector3 (allocation-free).
+            const pp = proxPose.transform.position;
+            const tp = tipPose.transform.position;
+            this._rawOrigin.set(pp.x, pp.y, pp.z);
+            this._tipPos.set(tp.x, tp.y, tp.z);
 
-            // ── Ray construction ───────────────────────────────────────────
-            // Origin : proximal knuckle — most stable XRHand joint, low jitter,
-            //          aligns naturally with the pointing axis of the index finger.
-            // Direction : proximal → tip, normalised.
-            // Guard against degenerate (zero-length) segment on first frame.
-            this._rawOrigin.copy(this._proxPos);
-            this._rawDir.subVectors(this._tipPos, this._proxPos);
-            const segLen = this._rawDir.length();
-            if (segLen < 0.001) { this._hasValidJoints = false; return; }
-            this._rawDir.divideScalar(segLen); // manual normalise — avoids sqrt branch
+            this._rawDir.subVectors(this._tipPos, this._rawOrigin);
+            const len = this._rawDir.length();
+            if (len < 0.001) { this._hasValidJoints = false; return; }
+            this._rawDir.divideScalar(len);
 
-            // ── EMA smoothing ──────────────────────────────────────────────
-            // Reduces Quest 2 hand-tracking jitter (raw joint positions jitter
-            // ≈1–3 mm per frame).  Alpha = 0.4 gives ~3-frame settling time at
-            // 72 Hz — responsive without visible wobble on a stationary pointer.
-            // Smoothing resets on the first valid frame after tracking was lost
-            // so the pointer snaps to the correct position without lerping from
-            // wherever it last was.
-            const SMOOTH = 0.4;
+            // EMA smoothing (alpha 0.4 ≈ 3-frame settle at 72 Hz).
             if (!this._hasSmoothing) {
               this._smoothOrigin.copy(this._rawOrigin);
               this._smoothDir.copy(this._rawDir);
               this._hasSmoothing = true;
             } else {
-              this._smoothOrigin.lerp(this._rawOrigin, SMOOTH);
-              // lerp direction then renormalise — avoids gimbal issues of slerp
-              // and is allocation-free (no Quaternion needed).
-              this._smoothDir.lerp(this._rawDir, SMOOTH);
+              this._smoothOrigin.lerp(this._rawOrigin, 0.4);
+              this._smoothDir.lerp(this._rawDir, 0.4);
               if (this._smoothDir.lengthSq() > 1e-6) this._smoothDir.normalize();
             }
-
             this._hasValidJoints = true;
 
-            // ── Thumb pinch → triggerdown / triggerup ──────────────────────
-            if (thumbTipJoint) {
-              const thumbPos = thumbTipJoint.getPosition();
-              if (thumbPos) {
-                this._thumbPos.copy(thumbPos);
+            // Pinch detection.
+            if (thumbSpace) {
+              const thumbPose = frame.getJointPose(thumbSpace, refSpace);
+              if (thumbPose) {
+                const th = thumbPose.transform.position;
+                this._thumbPos.set(th.x, th.y, th.z);
                 const dist = this._tipPos.distanceTo(this._thumbPos);
-                this._lastPinchDist = dist; // exposed for page-curl _combinedSqueeze
+                this._lastPinchDist = dist;
 
-                // ── Visual pinch proximity feedback ────────────────────────
-                // Approach zone 60 mm → 25 mm mapped to 0 → 1 proximity.
-                // Line colour lerps gold → white; opacity 0.35 → 1.0.
-                // Written directly to Three.js material — allocation-free,
-                // does not trigger A-Frame attribute/update pipeline.
-                const lineComp = this.el.components.line;
-                if (lineComp && lineComp.material) {
-                  const proximity = Math.max(0, Math.min(1,
-                    1 - (dist - 0.025) / (0.060 - 0.025)));
-                  lineComp.material.color.lerpColors(
-                    this._lineDefaultColor, this._linePinchColor, proximity);
-                  lineComp.material.opacity =
-                    this._lineDefaultOpacity + proximity * (1.0 - this._lineDefaultOpacity);
+                // Visual feedback: line gold→white, opacity 0.35→1 on approach.
+                const lc = this.el.components.line;
+                if (lc && lc.material) {
+                  const prox = Math.max(0, Math.min(1, 1 - (dist - 0.025) / 0.035));
+                  lc.material.color.lerpColors(this._colDefault, this._colPinch, prox);
+                  lc.material.opacity = this._opDefault + prox * (1 - this._opDefault);
                 }
 
-                // Pinch ENTER 25 mm / EXIT 40 mm (hysteresis prevents threshold flutter).
-                // Cooldown guard prevents re-fire within 300 ms of the last release.
+                // Enter 25 mm / exit 40 mm with 300 ms post-release cooldown.
                 if (!this.pinchActive && dist < 0.025 && this._pinchCooldown <= 0) {
                   this.pinchActive = true;
                   this.el.emit('triggerdown', {}, true);
                 } else if (this.pinchActive && dist > 0.040) {
                   this.pinchActive    = false;
-                  this._pinchCooldown = 300; // ms
+                  this._pinchCooldown = 300;
                   this.el.emit('triggerup', {}, true);
                 }
               }
             }
 
-          } catch (e) {
-            // Joints transiently unavailable — reset smoothing so next valid
-            // frame snaps to the recovered position rather than lerping from stale.
+          } catch(e) {
+            // Joints transiently unavailable (occlusion / tracking loss).
             this._hasValidJoints = false;
             this._hasSmoothing   = false;
           }
@@ -1884,7 +1755,15 @@
           });
 
           window.addEventListener('click', () => {
-            if (soundEl.components.sound) soundEl.components.sound.playSound();
+            // Resume the Web Audio context — required by all browsers and
+            // Meta Quest before any sound will play after a user gesture.
+            try {
+              const actx = THREE.AudioContext.getContext();
+              if (actx && actx.state === 'suspended') actx.resume();
+            } catch(e) {}
+            if (soundEl && soundEl.components && soundEl.components.sound) {
+              soundEl.components.sound.playSound();
+            }
             document.querySelector('#sound-ui').setAttribute('visible', 'false');
           }, { once: true });
         }
@@ -1895,34 +1774,26 @@
 
   <body>
 
-    <!-- ── Audio elements — intentionally OUTSIDE <a-assets> ───────────────────
-         A-Frame's asset system attaches loadeddata/error listeners to every node
-         inside <a-assets>.  Audio with preload="none" never fires loadeddata
-         (browsers enforce resource-load policies until a user gesture), so any
-         <audio> inside <a-assets> permanently blocks the asset counter and thus
-         the loading screen — regardless of <a-assets timeout>.
-         Placing these elements here (plain DOM nodes in <body>) means A-Frame's
-         sound component still resolves them by ID but they are invisible to the
-         asset-loading pipeline.  playback behaviour is identical. -->
-    <audio id="music-track"    src="chant.mp3"      preload="none"></audio>
-    <audio id="click-track"    src="click.mp3"      preload="none"></audio>
-    <audio id="pageturn-track" src="pageturn1.mp3"  preload="none"></audio>
-    <audio id="latin1-track"   src="latin1.mp3"     preload="none"></audio>
-    <audio id="english1-track" src="english1.mp3"   preload="none"></audio>
-    <audio id="latin2-track"   src="latin2.mp3"     preload="none"></audio>
-    <audio id="english2-track" src="english2.mp3"   preload="none"></audio>
-
     <a-scene scriptorium-logic renderer="antialias: true; colorManagement: true; useLegacyLights: false;">
 
-      <!-- ── Asset pipeline — GLB and images only ─────────────────────────────
-           timeout="10000": safety valve for Layer 1.  If either asset 404s or
-           the XHR/img error event is swallowed, the scene fires 'loaded' after
-           10 s.  Audio has been moved outside so only 3 items are tracked here:
-           the GLB and the two folio images.  Both fire load or error reliably. -->
+      <!-- ── Assets ────────────────────────────────────────────────────────────
+           Audio MUST be inside <a-assets> in A-Frame 1.7.1: the sound component
+           resolves 'src: #id' via the internal asset cache — elements outside
+           <a-assets> are invisible to it and audio would silently fail.
+           preload="auto" lets the browser buffer audio so 'loadeddata' fires and
+           the asset counter advances.  timeout="10000" covers any 404/network
+           failure so the loading screen never hangs permanently. -->
       <a-assets timeout="10000">
         <a-asset-item id="library-gltf" src="medievallibrary1.glb" response-type="arraybuffer"></a-asset-item>
         <img id="manuscript1" src="folio.jpg">
         <img id="manuscript2" src="folio2.jpg">
+        <audio id="music-track"    src="chant.mp3"      preload="auto"></audio>
+        <audio id="click-track"    src="click.mp3"      preload="auto"></audio>
+        <audio id="pageturn-track" src="pageturn1.mp3"  preload="auto"></audio>
+        <audio id="latin1-track"   src="latin1.mp3"     preload="auto"></audio>
+        <audio id="english1-track" src="english1.mp3"   preload="auto"></audio>
+        <audio id="latin2-track"   src="latin2.mp3"     preload="auto"></audio>
+        <audio id="english2-track" src="english2.mp3"   preload="auto"></audio>
       </a-assets>
 
       <!-- ── Starry backdrop ─────────────────────────────────────────────────
@@ -1984,7 +1855,6 @@
         <a-entity id="left-hand"
                   hand-controls="hand: left; handModelStyle: lowPoly; color: #c8956c"
                   hand-tracking-controls="hand: left"
-                  hand-tracking-extras
                   wrist-offset
                   raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35; direction: 0 0 -1;"
                   cursor="fuse: false; downEvents: triggerdown; upEvents: triggerup"
@@ -1994,7 +1864,6 @@
         <a-entity id="right-hand"
                   hand-controls="hand: right; handModelStyle: lowPoly; color: #c8956c"
                   hand-tracking-controls="hand: right"
-                  hand-tracking-extras
                   wrist-offset
                   raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35; direction: 0 0 -1;"
                   cursor="fuse: false; downEvents: triggerdown; upEvents: triggerup"
@@ -2070,4 +1939,5 @@
 
     </a-scene>
 
+  </body>
 </html>
