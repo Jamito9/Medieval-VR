@@ -1488,8 +1488,10 @@
     <a-scene scriptorium-logic renderer="antialias: true; colorManagement: true; useLegacyLights: false;">
 
       <a-assets>
-        <!-- Medieval library room model — loaded before any interaction is possible -->
         <a-asset-item id="library-gltf" src="medievallibrary1.glb" response-type="arraybuffer"></a-asset-item>
+        
+        <a-asset-item id="stone-floor" src="assets/monastery_stone_floor_1k.gltf"></a-asset-item>
+        
         <img id="manuscript1" src="folio.jpg">
         <img id="manuscript2" src="folio2.jpg">
         <audio id="music-track"    src="chant.mp3"      preload="auto"></audio>
@@ -1501,30 +1503,8 @@
         <audio id="english2-track" src="english2.mp3"   preload="auto"></audio>
       </a-assets>
 
-      <!-- ── Starry backdrop ─────────────────────────────────────────────────
-           lighting:none keeps A-Frame from generating its own directional
-           light — we provide all lights manually below so the library model
-           and the folio are lit consistently. The starry sky appears above
-           the library model wherever the ceiling is open or absent.
-      -->
       <a-entity environment="preset: starry; lighting: none;"></a-entity>
 
-      <!-- ── Medieval library kit ────────────────────────────────────────────
-           Placed at y=0 so its floor sits flush with the aframe-environment
-           ground plane. Scale 1 1 1 assumes the GLB was exported in metres,
-           which matches the existing assets (folio 1.1 m wide, player 1.6 m
-           tall). Rotated 180° on Y so the model's natural "entrance" faces
-           the player standing at origin looking toward −Z.
-
-           The folio lectern (0, 1.1, −1.4), button panel (+0.9, 1.1, −1.3),
-           info panel (−0.9, 1.1, −1.3) and text panels (−2.1, 1.5, −1.0 /
-           −2.1, 1.5, 0.2) all sit inside the open floor area of a typical
-           medieval library room — clear of bookshelves along the walls.
-
-           If the model appears too large:  set scale="0.5 0.5 0.5"
-           If the model faces the wrong way: set rotation="0 0 0"
-           If the floor appears raised:      set position="0 -N 0"
-      -->
       <a-gltf-model
         id="library-room"
         src="#library-gltf"
@@ -1533,13 +1513,13 @@
         scale="17 17 17">
       </a-gltf-model>
 
-      <!-- Shared lighting ───────────────────────────────────────────────────
-           Warm candle-white ambient keeps both the library model and the
-           folio illuminated without harsh shadows on Quest 2.
-           Two amber point lights simulate wall torches / sconces on either
-           side of the room, placed well above and outside the interaction
-           zone so they never intersect any interactive entity.
-      -->
+      <a-entity 
+        id="monastery-floor"
+        gltf-model="#stone-floor"
+        position="0 0.01 0"
+        rotation="0 0 0">
+      </a-entity>
+
       <a-entity light="type: ambient; color: #ffe4b5; intensity: 0.5;"></a-entity>
       <a-entity light="type: point; color: #e8823a; intensity: 1.2; distance: 9; decay: 2;"
                 position="-3.5 2.5 -2.0"></a-entity>
