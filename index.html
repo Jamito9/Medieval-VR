@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+​<!DOCTYPE html>
 <html>
   <head>
     <meta charset="utf-8">
@@ -89,6 +89,30 @@
         }
       }
 
+      // ── Three-button combo gate ───────────────────────────────────────────────
+      // Returns the analog squeeze value (0–1) ONLY when index trigger (buttons[0]),
+      // side grip (buttons[1]), AND the face thumb button (A = right / X = left,
+      // buttons[4]) are ALL simultaneously active at or above 0.5.
+      //
+      // Any single press in isolation — including an accidental trigger pull —
+      // returns 0. This means:
+      //   • Raycaster clicks on UI buttons and hotspots work normally (trigger alone).
+      //   • Page-curl and grab-rotate ONLY activate on the deliberate three-finger
+      //     full-hand gesture, exactly matching the physical sensation of gripping a page.
+      //
+      // Return value: Math.min(index, grip) so the analog magnitude still reflects
+      // how hard the user is squeezing, used for release hysteresis thresholds.
+      function comboVal(gp) {
+        if (!gp) return 0;
+        var index = gp.buttons[0] ? Math.max(0, Math.min(1, gp.buttons[0].value)) : 0;
+        var grip  = gp.buttons[1] ? Math.max(0, Math.min(1, gp.buttons[1].value)) : 0;
+        // buttons[4] = A (right hand) / X (left hand) — capacitive + digital.
+        // Accept both .pressed and .touched so the thumb only needs to rest on
+        // the button rather than requiring a full press.
+        var thumb = (gp.buttons[4] && (gp.buttons[4].pressed || gp.buttons[4].touched)) ? 1.0 : 0.0;
+        return (index >= 0.5 && grip >= 0.5 && thumb > 0) ? Math.min(index, grip) : 0;
+      }
+
       AFRAME.registerComponent('vr-locomotion', {
         init: function () {
           this.isVR      = false;
@@ -148,30 +172,122 @@
       });
 
       AFRAME.registerComponent('vr-grab-rotate', {
+        // ── VR behaviour ─────────────────────────────────────────────────────────
+        // In VR, grab-rotate is driven by the three-button combo (comboVal) plus
+        // controller proximity to the folio centre — NOT by raycaster mousedown.
+        // This means the raycaster being disabled during a combo does not break
+        // grab-rotate; the two systems are fully decoupled.
+        //
+        // Mutual exclusion (Fix 2 & 3):
+        //   • On every tick, if page-curl.isCurling is true the grab is immediately
+        //     released — a curl at a corner always takes full ownership of the folio.
+        //   • page-curl.tick() Phase 1 mirrors this: it bails out if grab-rotate is
+        //     already grabbing, so the two components never race for the same controller.
+        //
+        // Desktop behaviour is unchanged: drag-rotate handles right-click drag;
+        // this component is a no-op on desktop (isVR guard at top of tick).
         init: function () {
           this.grabbing              = false;
+          this.isVR                  = false;
           this.activeController      = null;
           this.previousControllerPos = new THREE.Vector3();
           this.currentControllerPos  = new THREE.Vector3();
+          this._leftCtrl             = null;
+          this._rightCtrl            = null;
+          // Scratch vectors — pre-allocated, never reallocated in tick().
+          this._folioWorldPos        = new THREE.Vector3();
+          this._ctrlWorldPos         = new THREE.Vector3();
+
           this.triggerHaptic = (intensity, duration) => {
             pulseHaptic(this.activeController, intensity, duration);
           };
-          this.el.sceneEl.addEventListener('enter-vr', () => { this.isVR = true;  });
-          this.el.sceneEl.addEventListener('exit-vr',  () => { this.isVR = false; });
-          this.el.addEventListener('mousedown', (evt) => {
-            if (this.isVR && evt.detail.cursorEl) {
-              this.grabbing         = true;
-              this.activeController = evt.detail.cursorEl;
-              this.activeController.object3D.getWorldPosition(this.previousControllerPos);
-              this.triggerHaptic(0.6, 50);
+
+          // Pre-allocated gamepad resolver — two-attempt strategy matching pulseHaptic.
+          this._getGP = function (ctrl) {
+            if (!ctrl) return null;
+            var tc = ctrl.components && ctrl.components['tracked-controls'];
+            if (tc && tc.controller && tc.controller.gamepad) return tc.controller.gamepad;
+            if (!navigator.getGamepads) return null;
+            var hd   = ctrl.getAttribute('hand-controls');
+            var hand = hd && hd.hand;
+            if (!hand) return null;
+            var pads = navigator.getGamepads();
+            for (var i = 0; i < pads.length; i++) {
+              var gp = pads[i];
+              if (!gp || !gp.connected) continue;
+              var id = gp.id.toLowerCase();
+              if (hand === 'left'  && id.indexOf('left')  !== -1) return gp;
+              if (hand === 'right' && id.indexOf('right') !== -1) return gp;
             }
+            return null;
+          };
+
+          this.el.sceneEl.addEventListener('enter-vr', () => { this.isVR = true;  });
+          this.el.sceneEl.addEventListener('exit-vr',  () => {
+            this.isVR     = false;
+            this.grabbing = false;
+            this.activeController = null;
           });
-          const stopGrabbing = () => { this.grabbing = false; this.activeController = null; };
-          this.el.addEventListener('mouseup',    stopGrabbing);
-          this.el.addEventListener('mouseleave', stopGrabbing);
+
+          // Resolve controller refs once the scene is fully loaded.
+          this.el.sceneEl.addEventListener('loaded', () => {
+            this._leftCtrl  = document.querySelector('#left-hand');
+            this._rightCtrl = document.querySelector('#right-hand');
+          });
+          // In VR the raycaster is disabled during combo, so mousedown never fires.
+          // Desktop mousedown is handled by the drag-rotate component (right-click).
+          // Nothing to do here for either mode — tick() manages VR grab exclusively.
         },
+
         tick: function () {
-          if (!this.grabbing || !this.activeController) return;
+          // ── Desktop: drag-rotate handles rotation; this component is VR-only ──
+          if (!this.isVR) return;
+
+          // ── Fix 2 & 3: Mutual exclusion — page-curl owns the folio when curling ─
+          // If a page curl has started (at a corner) while we were mid-grab, release
+          // immediately. The curl's own guard (Fix 4) prevents it starting while we
+          // are grabbing, so this branch only fires for edge-case timing overlaps.
+          const pc = this.el.components['page-curl'];
+          if (pc && pc.isCurling) {
+            if (this.grabbing) {
+              this.grabbing         = false;
+              this.activeController = null;
+            }
+            return;
+          }
+
+          // ── Not grabbing: try to start a grab via three-button combo ─────────────
+          if (!this.grabbing) {
+            // 30 cm reach from folio centre — broad enough for comfortable arm extension,
+            // narrow enough that the user has to intentionally reach for the page.
+            const REACH = 0.30;
+            const tryGrab = (ctrl) => {
+              if (!ctrl || this.grabbing) return;
+              const gp = this._getGP(ctrl);
+              if (!gp || comboVal(gp) < 0.50) return;
+              // Proximity to the folio's world-space centre.
+              this.el.object3D.getWorldPosition(this._folioWorldPos);
+              ctrl.object3D.getWorldPosition(this._ctrlWorldPos);
+              if (this._folioWorldPos.distanceTo(this._ctrlWorldPos) > REACH) return;
+              this.grabbing         = true;
+              this.activeController = ctrl;
+              ctrl.object3D.getWorldPosition(this.previousControllerPos);
+              this.triggerHaptic(0.6, 50);
+            };
+            tryGrab(this._rightCtrl);
+            tryGrab(this._leftCtrl);
+            return;
+          }
+
+          // ── Grabbing: check for combo release (hysteresis = 0.15) ────────────────
+          const gp = this._getGP(this.activeController);
+          if (!gp || comboVal(gp) < 0.15) {
+            this.grabbing         = false;
+            this.activeController = null;
+            return;
+          }
+
+          // ── Apply rotation from lateral + vertical controller delta ───────────────
           this.activeController.object3D.getWorldPosition(this.currentControllerPos);
           const deltaX      = this.currentControllerPos.x - this.previousControllerPos.x;
           const deltaY      = this.currentControllerPos.y - this.previousControllerPos.y;
@@ -523,17 +639,36 @@
             return null;
           };
 
-          // Pre-allocated squeeze resolver — returns the greater of index trigger
-          // (buttons[0]) and side grip (buttons[1]), clamped 0–1.
-          // Defined once in init() so tick() is allocation-free on the hot path.
-          this._squeezeVal = function (gp) {
-            if (!gp) return 0;
-            var trigger = gp.buttons[0] ? Math.max(0, Math.min(1, gp.buttons[0].value)) : 0;
-            var grip    = gp.buttons[1] ? Math.max(0, Math.min(1, gp.buttons[1].value)) : 0;
-            return Math.max(trigger, grip);
-          };
+          // ── Combo squeeze resolver (Fix 1 — amended) ─────────────────────────
+          // Physical manipulation mode (curl + grab-rotate) is ONLY active when
+          // index trigger, side grip AND the face thumb button (A/X) are all held
+          // simultaneously.  A single trigger press is reserved for the raycaster
+          // cursor pipeline (UI button clicks, hotspot interaction).
+          // Returns 0 when any of the three inputs is absent, so GRAB_THRESHOLD
+          // and the release hysteresis threshold both behave correctly.
+          this._squeezeVal = function (gp) { return comboVal(gp); };
 
-          // Texture cache: populated at scene load via THREE.TextureLoader.
+          // ── Raycaster state tracker ───────────────────────────────────────────
+          // Tracks whether each controller's raycaster has been disabled by the
+          // combo gate.  Stored separately from the raycaster component itself so
+          // we can guard against redundant setAttribute calls (which are expensive
+          // in A-Frame's component update cycle).
+          this._rcEnabled = { left: true, right: true };
+
+          // _setRC: enable or disable a controller's raycaster and visual line.
+          // Idempotent — no-ops if the state is already correct.
+          this._setRC = (ctrl, enable) => {
+            if (!ctrl) return;
+            const hd   = ctrl.getAttribute('hand-controls');
+            const key  = (hd && hd.hand === 'left') ? 'left' : 'right';
+            if (this._rcEnabled[key] === enable) return;   // already correct
+            this._rcEnabled[key] = enable;
+            ctrl.setAttribute('raycaster', 'enabled', enable);
+            // Also hide/restore the visual raycaster line object so the beam
+            // disappears immediately rather than freezing at the last intersection.
+            const lineObj = ctrl.getObject3D('line');
+            if (lineObj) lineObj.visible = enable;
+          };
           // Key = asset selector string e.g. '#manuscript1'.
           // Using THREE.TextureLoader guarantees the texture is fully decoded and
           // GPU-uploadable, unlike new THREE.Texture(img) which may not be on Quest 2.
@@ -1050,6 +1185,24 @@
             return;
           }
 
+          // ── Raycaster combo gate ──────────────────────────────────────────────────
+          // Continuously monitors both controllers' combo state (index + grip + A/X).
+          // When the full combo is pressed, the raycaster is disabled so trigger-alone
+          // events cannot fire cursor clicks on the folio or UI while the hands are in
+          // physical manipulation mode.  The raycaster is re-enabled the moment the
+          // combo breaks — instantly restoring point-select for UI and hotspots.
+          //
+          // This runs every tick regardless of isCurling so the raycaster is disabled
+          // as soon as the grip forms, before the proximity check below even runs.
+          if (this._rightCtrl) {
+            const gpR = this._getGP(this._rightCtrl);
+            this._setRC(this._rightCtrl, !gpR || comboVal(gpR) < 0.50);
+          }
+          if (this._leftCtrl) {
+            const gpL = this._getGP(this._leftCtrl);
+            this._setRC(this._leftCtrl,  !gpL || comboVal(gpL) < 0.50);
+          }
+
           // ── Phase 1: Not curling — detect a fresh gesture grab ────────────────────
           // A grab registers when a controller is within CORNER_REACH of a folio
           // corner entity AND squeezing above GRAB_THRESHOLD.  No raycaster
@@ -1057,6 +1210,12 @@
           // can reach out and grab the page naturally in 6DoF space.
           if (!this.isCurling) {
             if (!this._startCurl || (!this._rightCtrl && !this._leftCtrl)) return;
+
+            // ── Fix 4: Mutual exclusion — vr-grab-rotate owns the folio centre ──────
+            // If the user has already grabbed the folio for rotation (not at a corner),
+            // don't also start a curl.  The user must release the grab-rotate first.
+            const gr = this.el.components['vr-grab-rotate'];
+            if (gr && gr.grabbing) return;
 
             const GRAB_THRESHOLD = 0.50; // 50 % squeeze — deliberate grab, not accidental
             const CORNER_REACH   = 0.18; // 18 cm world-space radius around each corner
