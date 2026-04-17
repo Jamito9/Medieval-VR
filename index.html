@@ -1,4 +1,4 @@
-​<!DOCTYPE html>
+<!DOCTYPE html>
 <html>
   <head>
     <meta charset="utf-8">
@@ -611,9 +611,12 @@
           // curl initiation and continuous haptic feedback.
           this._lastHapticTime    = 0;                    // timestamp — throttles peel rumble
           this._cornerWorldPos    = new THREE.Vector3();  // scratch — corner proximity test
+          this._folioWorldPos     = new THREE.Vector3();  // scratch — folio centre world pos (hover + audio guard)
+          this._audioPanelPos     = new THREE.Vector3();  // scratch — audio panel world pos (distance guard)
           this._grabCooldown      = 0;                    // ms remaining — prevents instant re-grab
           this._rightCtrl         = null;                 // resolved on scene 'loaded'
           this._leftCtrl          = null;
+          this._audioPanelEls     = [];                   // [panel-audio] entity refs — populated at scene load
           this._isHotspotTargeted = null;                 // interaction-guard helpers
           this._isAudioHovered    = null;
           this._startCurl         = null;                 // assigned below after startCurl is defined
@@ -655,17 +658,54 @@
           // in A-Frame's component update cycle).
           this._rcEnabled = { left: true, right: true };
 
-          // _setRC: enable or disable a controller's raycaster and visual line.
-          // Idempotent — no-ops if the state is already correct.
+          // ── Folio hover state ─────────────────────────────────────────────────
+          // Tracks whether each controller is currently inside the folio's
+          // interaction envelope.  Gating on entry/exit means the haptic pulse
+          // fires exactly once per approach, not every tick while inside.
+          this._folioHoverActive = { left: false, right: false };
+
+          // ── _setRC: State A / B raycaster layer switching ────────────────────
+          // Uses Three.js layer masking on the underlying THREE.Raycaster instance
+          // rather than A-Frame's 'enabled' attribute.  This is the key architectural
+          // improvement over the previous approach:
+          //
+          //   Old approach: setAttribute('raycaster', 'enabled', false)
+          //     → completely kills the raycaster — no cursor events at all,
+          //       including for UI buttons and audio zones.
+          //
+          //   New approach: rc.raycaster.layers.disable(2)  [State B — near]
+          //     → the folio mesh (layer 2 only) becomes invisible to the raycaster.
+          //       UI buttons and audio zone planes remain on layer 0, so point-select
+          //       for the side panel still works at any distance.
+          //
+          // Layer assignment (set once at scene load, persists for the session):
+          //   Layer 0 — all UI geometry (buttons, audio zones, hotspot planes, cursor)
+          //   Layer 2 — folio mesh only
+          //
+          // The THREE.Raycaster starts with all layers enabled (mask = 0xFFFFFFFF).
+          // _setRC only ever flips layer 2 on/off; layer 0 is never touched.
+          //
+          // Idempotent — skips the layer op if the state is already correct.
+          // Called on HOVER_REACH entry/exit transitions in checkHover(), not every tick.
           this._setRC = (ctrl, enable) => {
             if (!ctrl) return;
-            const hd   = ctrl.getAttribute('hand-controls');
-            const key  = (hd && hd.hand === 'left') ? 'left' : 'right';
-            if (this._rcEnabled[key] === enable) return;   // already correct
+            const hd  = ctrl.getAttribute('hand-controls');
+            const key = (hd && hd.hand === 'left') ? 'left' : 'right';
+            if (this._rcEnabled[key] === enable) return;   // already correct — no-op
             this._rcEnabled[key] = enable;
-            ctrl.setAttribute('raycaster', 'enabled', enable);
-            // Also hide/restore the visual raycaster line object so the beam
-            // disappears immediately rather than freezing at the last intersection.
+            // Manipulate the Three.js raycaster layer mask directly.
+            // ctrl.components.raycaster.raycaster is the THREE.Raycaster instance
+            // that A-Frame uses internally for all intersection tests.
+            const aRC = ctrl.components && ctrl.components.raycaster;
+            if (aRC && aRC.raycaster) {
+              if (enable) {
+                aRC.raycaster.layers.enable(2);   // State A: folio on layer 2 is hittable
+              } else {
+                aRC.raycaster.layers.disable(2);  // State B: folio masked, layer 0 UI still hittable
+              }
+            }
+            // Hide the visual beam on entry (State B) — restoring on exit (State A).
+            // Hides immediately rather than freezing at the last intersection point.
             const lineObj = ctrl.getObject3D('line');
             if (lineObj) lineObj.visible = enable;
           };
@@ -688,6 +728,13 @@
             if (this.isCurling) { this.resetCurl(); }
             this.rightCorner.classList.add('clickable');
             this.leftCorner.classList.add('clickable');
+            // Reset hover state so re-entry into VR fires fresh pulses.
+            // Re-enable layer 2 on both raycasters so the desktop cursor can
+            // hit the folio normally (desktop raycaster always has all layers enabled,
+            // but this is belt-and-suspenders for any edge-case re-entry).
+            this._folioHoverActive = { left: false, right: false };
+            if (this._rightCtrl) this._setRC(this._rightCtrl, true);
+            if (this._leftCtrl)  this._setRC(this._leftCtrl,  true);
           });
 
           // Preload all page textures once the scene has finished loading.
@@ -1053,6 +1100,35 @@
             this._rightCtrl = rightCtrl;
             this._leftCtrl  = leftCtrl;
 
+            // ── Three.js layer assignment ─────────────────────────────────────────
+            // Move the folio mesh exclusively to layer 2.
+            // Layer 0 is the default for all geometry; by removing the folio from
+            // layer 0 and placing it on layer 2 only, we can selectively mask it
+            // from a raycaster by calling raycaster.layers.disable(2) without
+            // affecting any other clickable entity (which remain on layer 0).
+            //
+            // The rendering camera must also have layer 2 enabled, otherwise the
+            // folio mesh becomes invisible.  scene.camera is the THREE.PerspectiveCamera;
+            // layers.enable() is additive — layer 0 stays enabled for all other geometry.
+            //
+            // Geometry added later (curlMesh, backCurlMesh, backPage) is never in the
+            // raycaster's .objects selector so it does not need layer assignment.
+            // The corner a-planes are .clickable but only on desktop (removed in enter-vr);
+            // they remain on their default layer 0 for the desktop cursor.
+            const folioMesh = folio.getObject3D('mesh');
+            if (folioMesh) {
+              folioMesh.layers.set(2);          // layer 2 only — removes layer 0
+            }
+            if (scene.camera) {
+              scene.camera.layers.enable(2);    // camera renders both layer 0 and layer 2
+            }
+
+            // ── Audio panel element refs ──────────────────────────────────────────
+            // Cache all [panel-audio] entities once at load time.
+            // Used by _isAudioHovered() to run a distance check each tick without
+            // querying the DOM or traversing raycaster intersection arrays.
+            this._audioPanelEls = Array.from(document.querySelectorAll('[panel-audio]'));
+
             // Guard: blocks curl grab while a folio hotspot popup is targeted so
             // the user can interact with info panels without accidentally turning the page.
             this._isHotspotTargeted = () => {
@@ -1060,20 +1136,30 @@
               return hs && hs.targetedPanel !== null;
             };
 
-            // Guard: blocks curl grab while either controller laser is hovering over
-            // an audio panel zone so the audio toggle takes priority over page curl.
+            // Guard: blocks curl grab while either controller is within reach of an
+            // audio panel so the audio toggle takes priority over page curl.
+            //
+            // Rewritten as a world-space distance check (replacing the previous
+            // raycaster intersection traversal).  Motivation: with State B layer
+            // masking, the folio is invisible to the raycaster when near — but that
+            // doesn't affect audio panel planes (layer 0).  The intersection approach
+            // would still technically work, but it requires traversing rc.intersectedEls
+            // and walking the DOM parentNode chain on every tick, which is allocation-
+            // heavy.  A direct distance check is allocation-free and more robust when
+            // the raycaster is in a transitional state between layers.
+            //
+            // Threshold 0.80 m covers comfortable arm reach toward either side panel
+            // without triggering from across the room (panels are at x = -1.5 m,
+            // folio is at x ≈ 0 m — the dead zones do not overlap).
             this._isAudioHovered = () => {
+              if (!this._audioPanelEls.length) return false;
               const ctrls = [rightCtrl, leftCtrl];
               for (const ctrl of ctrls) {
                 if (!ctrl) continue;
-                const rc = ctrl.components && ctrl.components.raycaster;
-                if (!rc || !rc.intersectedEls) continue;
-                for (const el of rc.intersectedEls) {
-                  let node = el;
-                  while (node && node !== document) {
-                    if (node.hasAttribute && node.hasAttribute('panel-audio')) return true;
-                    node = node.parentNode;
-                  }
+                ctrl.object3D.getWorldPosition(this._ctrlPos);
+                for (const panelEl of this._audioPanelEls) {
+                  panelEl.object3D.getWorldPosition(this._audioPanelPos);
+                  if (this._audioPanelPos.distanceTo(this._ctrlPos) <= 0.80) return true;
                 }
               }
               return false;
@@ -1186,22 +1272,39 @@
           }
 
           // ── Raycaster combo gate ──────────────────────────────────────────────────
-          // Continuously monitors both controllers' combo state (index + grip + A/X).
-          // When the full combo is pressed, the raycaster is disabled so trigger-alone
-          // events cannot fire cursor clicks on the folio or UI while the hands are in
-          // physical manipulation mode.  The raycaster is re-enabled the moment the
-          // combo breaks — instantly restoring point-select for UI and hotspots.
-          //
-          // This runs every tick regardless of isCurling so the raycaster is disabled
-          // as soon as the grip forms, before the proximity check below even runs.
-          if (this._rightCtrl) {
-            const gpR = this._getGP(this._rightCtrl);
-            this._setRC(this._rightCtrl, !gpR || comboVal(gpR) < 0.50);
-          }
-          if (this._leftCtrl) {
-            const gpL = this._getGP(this._leftCtrl);
-            this._setRC(this._leftCtrl,  !gpL || comboVal(gpL) < 0.50);
-          }
+          // The combo state (index + grip + A/X) is read by _squeezeVal / comboVal
+          // and drives Phase 1 grab detection below.  Layer switching (State A ↔ B)
+          // is now driven by HOVER_REACH proximity in checkHover — not by the combo —
+          // so the folio is masked from the raycaster as soon as the hand is near,
+          // regardless of whether the buttons are pressed.  No _setRC calls here.
+
+          // ── Folio proximity hover pulse + State A/B layer switching ───────────────
+          // Entry (outside → inside HOVER_REACH):
+          //   • Single haptic confirmation pulse — "you are close enough to act"
+          //   • _setRC(ctrl, false) → State B: disable layer 2 on this controller's
+          //     raycaster so the folio mesh is masked.  UI buttons (layer 0) are
+          //     unaffected.  Visual beam is hidden for immersion.
+          // Exit (inside → outside HOVER_REACH):
+          //   • _setRC(ctrl, true) → State A: re-enable layer 2.  Folio is hittable
+          //     again from a distance.  Visual beam is restored.
+          // Transition-only — _setRC is idempotent so no-ops if already in correct state.
+          const HOVER_REACH = 0.40;
+          const checkHover = (ctrl, handKey) => {
+            if (!ctrl) return;
+            this.el.object3D.getWorldPosition(this._folioWorldPos);
+            ctrl.object3D.getWorldPosition(this._ctrlPos);
+            const inside = this._folioWorldPos.distanceTo(this._ctrlPos) <= HOVER_REACH;
+            if (inside && !this._folioHoverActive[handKey]) {
+              pulseHaptic(ctrl, 0.25, 30);
+              this._folioHoverActive[handKey] = true;
+              this._setRC(ctrl, false);   // → State B: mask folio layer, hide beam
+            } else if (!inside && this._folioHoverActive[handKey]) {
+              this._folioHoverActive[handKey] = false;
+              this._setRC(ctrl, true);    // → State A: unmask folio layer, restore beam
+            }
+          };
+          checkHover(this._rightCtrl, 'right');
+          checkHover(this._leftCtrl,  'left');
 
           // ── Phase 1: Not curling — detect a fresh gesture grab ────────────────────
           // A grab registers when a controller is within CORNER_REACH of a folio
@@ -1719,14 +1822,14 @@
         <a-entity id="left-hand"
                   hand-controls="hand: left; handModelStyle: lowPoly; color: #c8956c"
                   wrist-offset
-                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35; direction: 0 -0.643 -0.766;"
+                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35; direction: 0 -0.174 -0.985;"
                   cursor="fuse: false; downEvents: triggerdown; upEvents: triggerup"
                   hand-finger-curl>
         </a-entity>
         <a-entity id="right-hand"
                   hand-controls="hand: right; handModelStyle: lowPoly; color: #c8956c"
                   wrist-offset
-                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35; direction: 0 -0.643 -0.766;"
+                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35; direction: 0 -0.174 -0.985;"
                   cursor="fuse: false; downEvents: triggerdown; upEvents: triggerup"
                   hand-finger-curl>
         </a-entity>
