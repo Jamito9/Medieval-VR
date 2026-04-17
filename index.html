@@ -1457,6 +1457,222 @@
         }
       });
 
+      // ── finger-poke ──────────────────────────────────────────────────────────
+      // VR-only physical fingertip interactor.  Tests the index distal bone world
+      // position (from hand-finger-curl) against folio hotspot zones and side
+      // buttons, firing toggles/clicks without requiring the raycaster.
+      //
+      // Fingertip resolution — two-tier:
+      //   Tier 1: hand-finger-curl.bones.index last bone (distal phalanx origin).
+      //           Accurate when the lowPoly GLB has a skeleton.
+      //   Tier 2: controller world pos + fixed local offset (0, 0.10, 0.02)
+      //           approximating an extended index finger from the grip origin.
+      //
+      // Hotspot poke (folio-local space test):
+      //   Fingertip transformed into folio-local space.
+      //   XY must fall inside zone bounds; |Z| must be ≤ POKE_DEPTH (4 cm).
+      //   |Z| ≤ HOVER_DEPTH (12 cm) gives a pre-contact highlight.
+      //
+      // Button poke (world-space sphere test):
+      //   BUTTON_POKE_RADIUS 0.06 m.  Hover starts at 1.8× that radius (~10.8 cm).
+      //   Dispatches a native MouseEvent('click') on the element so existing
+      //   scriptorium-logic listeners fire unchanged.  pulseHaptic is called
+      //   directly (bypasses haptic-button's mousedown dependency).
+      //
+      // Highlight:
+      //   Hover state  → dim gold emissive (#332200) on the zone bg / button mesh.
+      //   Contact state → bright gold emissive (#997700) flash before action fires.
+      //   All highlight ops are direct Three.js material mutations — no setAttribute.
+      //
+      // Debounce:
+      //   Per-hand POKE_COOLDOWN 600 ms prevents re-firing while the finger lingers.
+      //   _zoneState / _btnState arrays (Int8Array) collect both hands' intent each
+      //   tick before applying highlights — avoids two-hand race conditions.
+      //
+      // VR-only — isVR gate exits tick() immediately on desktop.
+      AFRAME.registerComponent('finger-poke', {
+
+        init: function () {
+          this.isVR       = false;
+          this._rightCtrl = null;
+          this._leftCtrl  = null;
+          this._folio     = null;
+          this._buttons   = [];  // [{el, isHovered}]
+
+          // Per-hand poke cooldown in ms.
+          this._pokeCooldown = { left: 0, right: 0 };
+
+          // Pre-allocated scratch — never reallocated in tick().
+          this._tipWorld  = new THREE.Vector3();
+          this._tipLocal  = new THREE.Vector3();
+          this._btnWorld  = new THREE.Vector3();
+          this._offsetLoc = new THREE.Vector3();
+          this._ctrlQuat  = new THREE.Quaternion();
+
+          // Emissive colours — allocated once in init().
+          this._eHover   = new THREE.Color(0.20, 0.15, 0.00);  // dim gold
+          this._eContact = new THREE.Color(0.60, 0.45, 0.00);  // bright gold
+          this._eOff     = new THREE.Color(0, 0, 0);
+
+          // State arrays — 0 = off, 1 = hover, 2 = contact.
+          // Size 8 covers 4 zones + 5 buttons with margin.
+          this._zoneState = new Int8Array(8);
+          this._btnState  = new Int8Array(8);
+
+          this.el.addEventListener('enter-vr', () => { this.isVR = true;  });
+          this.el.addEventListener('exit-vr',  () => {
+            this.isVR = false;
+            this._clearAll();
+          });
+
+          this.el.addEventListener('loaded', () => {
+            this._rightCtrl = document.querySelector('#right-hand');
+            this._leftCtrl  = document.querySelector('#left-hand');
+            this._folio     = document.querySelector('#folio-object');
+            const ids = ['zoom-button', 'mat-button', 'swap-button', 'scale-button', 'mute-button'];
+            this._buttons = ids.map(id => {
+              const el = document.querySelector('#' + id);
+              return el ? { el, isHovered: false } : null;
+            }).filter(Boolean);
+          });
+        },
+
+        // ── _getTip: write index fingertip world pos into `out` ────────────────
+        _getTip: function (ctrl, out) {
+          const hfc = ctrl.components && ctrl.components['hand-finger-curl'];
+          if (hfc && hfc.ready && hfc.bones.index && hfc.bones.index.length > 0) {
+            const distal = hfc.bones.index[hfc.bones.index.length - 1];
+            distal.getWorldPosition(out);
+            return;
+          }
+          // Fallback: controller origin + fixed finger-extension offset.
+          ctrl.object3D.getWorldPosition(out);
+          this._offsetLoc.set(0, 0.10, 0.02);
+          ctrl.object3D.getWorldQuaternion(this._ctrlQuat);
+          this._offsetLoc.applyQuaternion(this._ctrlQuat);
+          out.add(this._offsetLoc);
+        },
+
+        // ── _setEmissive: direct Three.js material emissive mutation ───────────
+        _setEmissive: function (el, colour) {
+          var mesh = el.getObject3D('mesh');
+          if (mesh && mesh.material && mesh.material.emissive) {
+            mesh.material.emissive.copy(colour);
+          }
+        },
+
+        // ── _clearAll: reset all highlights on VR exit ─────────────────────────
+        _clearAll: function () {
+          for (var i = 0; i < this._buttons.length; i++) {
+            this._setEmissive(this._buttons[i].el, this._eOff);
+            this._buttons[i].isHovered = false;
+          }
+          var hs = this._folio && this._folio.components['folio-hotspots'];
+          if (hs) {
+            for (var j = 0; j < (hs.zones ? hs.zones.length : 0); j++) {
+              hs.clearZoneHighlight(j);
+            }
+          }
+        },
+
+        tick: function (t, dt) {
+          if (!this.isVR || !this._folio) return;
+
+          // Tick down per-hand cooldowns.
+          if (this._pokeCooldown.left  > 0) this._pokeCooldown.left  -= (dt || 16);
+          if (this._pokeCooldown.right > 0) this._pokeCooldown.right -= (dt || 16);
+
+          var POKE_DEPTH         = 0.04;   // 4 cm contact depth against folio
+          var HOVER_DEPTH        = 0.12;   // 12 cm pre-contact hover zone
+          var BUTTON_POKE_RADIUS = 0.06;   // 6 cm contact radius for buttons
+          var BUTTON_HOVER_MULT  = 1.8;    // hover at 1.8× contact radius ≈ 10.8 cm
+
+          var hs          = this._folio.components['folio-hotspots'];
+          var currentPage = this._folio.sceneEl.currentAudioPage || 1;
+          var nZones      = hs && hs.zones ? hs.zones.length : 0;
+          var nBtns       = this._buttons.length;
+
+          // Reset state arrays before collecting both hands' contribution.
+          for (var z = 0; z < nZones; z++) this._zoneState[z] = 0;
+          for (var b = 0; b < nBtns;  b++) this._btnState[b]  = 0;
+
+          // ── Per-hand collection ─────────────────────────────────────────────
+          var hands = [
+            { ctrl: this._rightCtrl, key: 'right' },
+            { ctrl: this._leftCtrl,  key: 'left'  }
+          ];
+
+          for (var h = 0; h < 2; h++) {
+            var ctrl = hands[h].ctrl;
+            var key  = hands[h].key;
+            if (!ctrl) continue;
+
+            this._getTip(ctrl, this._tipWorld);
+
+            // ── Hotspot zones (folio-local space) ─────────────────────────────
+            if (hs && nZones > 0) {
+              this._tipLocal.copy(this._tipWorld);
+              this._folio.object3D.worldToLocal(this._tipLocal);
+
+              for (var zi = 0; zi < nZones; zi++) {
+                var zone = hs.zones[zi];
+                if (zone.page !== currentPage) continue;
+                var inXY = Math.abs(this._tipLocal.x - zone.cx) <= zone.halfW &&
+                           Math.abs(this._tipLocal.y - zone.cy) <= zone.halfH;
+                if (!inXY) continue;
+                var absZ = Math.abs(this._tipLocal.z);
+                if (absZ <= POKE_DEPTH) {
+                  // Promote to contact (never downgrade).
+                  if (this._zoneState[zi] < 2) this._zoneState[zi] = 2;
+                  if (this._pokeCooldown[key] <= 0) {
+                    hs.pokeToggle(zi, ctrl);
+                    this._pokeCooldown[key] = 600;
+                  }
+                } else if (absZ <= HOVER_DEPTH) {
+                  if (this._zoneState[zi] < 1) this._zoneState[zi] = 1;
+                }
+              }
+            }
+
+            // ── Side buttons (world-space proximity) ──────────────────────────
+            for (var bi = 0; bi < nBtns; bi++) {
+              this._buttons[bi].el.object3D.getWorldPosition(this._btnWorld);
+              var dist = this._tipWorld.distanceTo(this._btnWorld);
+              if (dist <= BUTTON_POKE_RADIUS) {
+                if (this._btnState[bi] < 2) this._btnState[bi] = 2;
+                if (this._pokeCooldown[key] <= 0) {
+                  this._buttons[bi].el.dispatchEvent(
+                    new MouseEvent('click', { bubbles: true })
+                  );
+                  pulseHaptic(ctrl, 0.5, 40);
+                  this._pokeCooldown[key] = 600;
+                }
+              } else if (dist <= BUTTON_POKE_RADIUS * BUTTON_HOVER_MULT) {
+                if (this._btnState[bi] < 1) this._btnState[bi] = 1;
+              }
+            }
+          }
+
+          // ── Apply zone highlights ───────────────────────────────────────────
+          if (hs) {
+            for (var zi2 = 0; zi2 < nZones; zi2++) {
+              var zs = this._zoneState[zi2];
+              if      (zs === 2) hs.setZoneHighlight(zi2, this._eContact);
+              else if (zs === 1) hs.setZoneHighlight(zi2, this._eHover);
+              else               hs.clearZoneHighlight(zi2);
+            }
+          }
+
+          // ── Apply button highlights ─────────────────────────────────────────
+          for (var bi2 = 0; bi2 < nBtns; bi2++) {
+            var bs = this._btnState[bi2];
+            if      (bs === 2) this._setEmissive(this._buttons[bi2].el, this._eContact);
+            else if (bs === 1) this._setEmissive(this._buttons[bi2].el, this._eHover);
+            else               this._setEmissive(this._buttons[bi2].el, this._eOff);
+          }
+        }
+      });
+
       AFRAME.registerComponent('folio-hotspots', {
         init: function () {
           const folio         = this.el;
@@ -1485,7 +1701,7 @@
             txt.setAttribute('position', '0 0 0.01');
             panel.appendChild(txt);
             folio.appendChild(panel);
-            this.zones.push({ cx, cy, halfW: 0.125, halfH: 0.10, panel, panelOpen: false, page });
+            this.zones.push({ cx, cy, halfW: 0.125, halfH: 0.10, panel, bg, panelOpen: false, page });
           };
 
           // Folio 1 hotspots
@@ -1551,6 +1767,37 @@
             }
           }
           this.targetedPanel = hitZoneIdx >= 0 ? this.zones[hitZoneIdx].panel : null;
+        },
+
+        // ── pokeToggle: called by finger-poke on physical contact ──────────────
+        // Directly toggles the zone panel by index, bypassing targetedPanel.
+        // Fires a confirmation haptic on the interacting controller.
+        pokeToggle: function (zoneIdx, ctrl) {
+          var z = this.zones[zoneIdx];
+          if (!z || z.page !== (this.el.sceneEl.currentAudioPage || 1)) return;
+          z.panelOpen = !z.panelOpen;
+          z.panel.setAttribute('visible', z.panelOpen);
+          pulseHaptic(ctrl, 0.55, 45);
+        },
+
+        // ── setZoneHighlight: set emissive on zone bg mesh directly ────────────
+        setZoneHighlight: function (zoneIdx, colour) {
+          var z = this.zones[zoneIdx];
+          if (!z || !z.bg) return;
+          var mesh = z.bg.getObject3D('mesh');
+          if (mesh && mesh.material && mesh.material.emissive) {
+            mesh.material.emissive.copy(colour);
+          }
+        },
+
+        // ── clearZoneHighlight: restore zero emissive on zone bg mesh ──────────
+        clearZoneHighlight: function (zoneIdx) {
+          var z = this.zones[zoneIdx];
+          if (!z || !z.bg) return;
+          var mesh = z.bg.getObject3D('mesh');
+          if (mesh && mesh.material && mesh.material.emissive) {
+            mesh.material.emissive.set(0, 0, 0);
+          }
         }
       });
 
@@ -1735,10 +1982,43 @@
             muteLabel.setAttribute('value', isMuted ? 'UNMUTE' : 'MUTE');
           });
 
-          window.addEventListener('click', () => {
+          // ── Audio start gate ─────────────────────────────────────────────────
+          // Desktop: any window click starts the ambient music (browser autoplay policy).
+          // VR:      A (right hand) or X (left hand) button triggers the same action.
+          //          The folio is on layer 2 and may be masked by the raycaster when
+          //          the user first enters VR, so clicking on the folio is unreliable
+          //          as a start trigger. A/X are always available regardless of hand state.
+          //
+          // audioStarted flag prevents double-firing if both A and X are pressed,
+          // or if the user clicks on desktop and then enters VR.
+          const soundUiEl = document.querySelector('#sound-ui');
+          let audioStarted = false;
+
+          const startAudio = () => {
+            if (audioStarted) return;
+            audioStarted = true;
             if (soundEl.components.sound) soundEl.components.sound.playSound();
-            document.querySelector('#sound-ui').setAttribute('visible', 'false');
-          }, { once: true });
+            soundUiEl.setAttribute('visible', 'false');
+          };
+
+          // Desktop trigger — fires once on any click, then removes itself.
+          window.addEventListener('click', startAudio, { once: true });
+
+          // VR trigger — update prompt text on enter, wire A/X one-shot listeners.
+          // Controllers are always present by the time enter-vr fires on Quest 2.
+          this.el.addEventListener('enter-vr', () => {
+            if (!audioStarted) soundUiEl.setAttribute('value', 'PRESS A OR X TO START');
+            const rightCtrl = document.querySelector('#right-hand');
+            const leftCtrl  = document.querySelector('#left-hand');
+            const vrStart = () => startAudio();
+            if (rightCtrl) rightCtrl.addEventListener('abuttondown', vrStart, { once: true });
+            if (leftCtrl)  leftCtrl.addEventListener('xbuttondown',  vrStart, { once: true });
+          });
+
+          // Restore desktop prompt if the user exits VR before starting.
+          this.el.addEventListener('exit-vr', () => {
+            if (!audioStarted) soundUiEl.setAttribute('value', 'CLICK TO START');
+          });
         }
       });
 
@@ -1747,7 +2027,7 @@
 
   <body>
 
-    <a-scene scriptorium-logic renderer="antialias: true; colorManagement: true; useLegacyLights: false;">
+    <a-scene scriptorium-logic finger-poke renderer="antialias: true; colorManagement: true; useLegacyLights: false;">
 
       <a-assets>
         <!-- Medieval library room model — loaded before any interaction is possible -->
@@ -1822,14 +2102,14 @@
         <a-entity id="left-hand"
                   hand-controls="hand: left; handModelStyle: lowPoly; color: #c8956c"
                   wrist-offset
-                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35; direction: 0 -0.174 -0.985;"
+                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35; direction: 0 1 0;"
                   cursor="fuse: false; downEvents: triggerdown; upEvents: triggerup"
                   hand-finger-curl>
         </a-entity>
         <a-entity id="right-hand"
                   hand-controls="hand: right; handModelStyle: lowPoly; color: #c8956c"
                   wrist-offset
-                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35; direction: 0 -0.174 -0.985;"
+                  raycaster="objects: .clickable; far: 10; showLine: true; lineColor: #FFD700; lineOpacity: 0.35; direction: 0 1 0;"
                   cursor="fuse: false; downEvents: triggerdown; upEvents: triggerup"
                   hand-finger-curl>
         </a-entity>
