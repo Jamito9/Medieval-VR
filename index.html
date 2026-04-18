@@ -18,7 +18,10 @@
           if (!cameraEl) return;
           cameraEl.object3D.getWorldPosition(this.targetPos);
           this.el.object3D.getWorldPosition(this.panelPos);
-          this.el.object3D.lookAt(this.targetPos.x, this.targetPos.y, this.targetPos.z);
+          // Fix 1: pass the panel's own Y so only yaw is applied.
+          // Passing targetPos.y caused the panels to pitch up/down as the user
+          // crouched or stood, skewing text in the headset.
+          this.el.object3D.lookAt(this.targetPos.x, this.panelPos.y, this.targetPos.z);
         }
       });
 
@@ -106,10 +109,11 @@
         if (!gp) return 0;
         var index = gp.buttons[0] ? Math.max(0, Math.min(1, gp.buttons[0].value)) : 0;
         var grip  = gp.buttons[1] ? Math.max(0, Math.min(1, gp.buttons[1].value)) : 0;
-        // buttons[4] = A (right hand) / X (left hand) — capacitive + digital.
-        // Accept both .pressed and .touched so the thumb only needs to rest on
-        // the button rather than requiring a full press.
-        var thumb = (gp.buttons[4] && (gp.buttons[4].pressed || gp.buttons[4].touched)) ? 1.0 : 0.0;
+        // Fix 4: require .pressed (not .touched) for the A/X thumb gate.
+        // Quest 2 capacitive sensors register .touched from light incidental contact.
+        // Using .pressed requires a deliberate button depression, preventing accidental
+        // combo formation when the thumb merely rests near the button while gripping.
+        var thumb = (gp.buttons[4] && gp.buttons[4].pressed) ? 1.0 : 0.0;
         return (index >= 0.5 && grip >= 0.5 && thumb > 0) ? Math.min(index, grip) : 0;
       }
 
@@ -120,7 +124,8 @@
           this.rightCtrl = null;
           this._forward  = new THREE.Vector3();
           this._right    = new THREE.Vector3();
-          this._snapUsed = false;
+          // Fix 6: pre-allocate world-up vector — avoids new THREE.Vector3 per tick.
+          this._up       = new THREE.Vector3(0, 1, 0);
           const scene = this.el.sceneEl;
           scene.addEventListener('enter-vr', () => { this.isVR = true;  });
           scene.addEventListener('exit-vr',  () => { this.isVR = false; });
@@ -136,6 +141,8 @@
         },
         tick: function (t, dt) {
           if (!this.isVR) return;
+          // Fix 7: guard dt — A-Frame can emit dt=0 on the first tick frame.
+          const safeDt = dt || 16;
           const leftGP  = this._getGamepad(this.leftCtrl);
           const rightGP = this._getGamepad(this.rightCtrl);
           if (leftGP) {
@@ -149,23 +156,24 @@
                 this._forward.y = 0;
                 this._forward.negate();
                 this._forward.normalize();
-                this._right.crossVectors(this._forward, new THREE.Vector3(0, 1, 0)).normalize();
+                // Fix 6: use pre-allocated this._up instead of allocating per tick.
+                this._right.crossVectors(this._forward, this._up).normalize();
                 const speed = 0.004;
                 const pos   = this.el.object3D;
-                pos.position.addScaledVector(this._forward, -stickY * speed * dt);
-                pos.position.addScaledVector(this._right,    stickX * speed * dt);
+                pos.position.addScaledVector(this._forward, -stickY * speed * safeDt);
+                pos.position.addScaledVector(this._right,    stickX * speed * safeDt);
               }
             }
           }
           if (rightGP) {
-            const stickX = rightGP.axes[2] || 0;
-            if (Math.abs(stickX) > 0.6 && !this._snapUsed) {
-              const snapRad = stickX > 0 ? -THREE.MathUtils.degToRad(45) : THREE.MathUtils.degToRad(45);
-              this.el.object3D.rotation.y += snapRad;
-              pulseHaptic(this.rightCtrl, 0.5, 40);
-              this._snapUsed = true;
-            } else if (Math.abs(stickX) < 0.3) {
-              this._snapUsed = false;
+            const stickX  = rightGP.axes[2] || 0;
+            const deadzone = 0.2;
+            if (Math.abs(stickX) > deadzone) {
+              // Smooth continuous yaw — same dt-scaled pattern as left-stick movement.
+              // TURN_SPEED 0.0015 rad/ms gives ≈ 86°/s at full deflection (comfortable
+              // for seated VR; fast enough to scan the room without disorientation).
+              const TURN_SPEED = 0.0015;
+              this.el.object3D.rotation.y -= stickX * TURN_SPEED * safeDt;
             }
           }
         }
@@ -596,6 +604,7 @@
           this.curlSide         = null;
           this.activeController = null;
           this.startX           = 0;
+          this.startMouseX      = 0;      // Fix 11: declare here — used in _onMouseMoveCurl
           this.peelProgress     = 0;
           this.isVR             = false;
           this._ctrlPos         = new THREE.Vector3();
@@ -689,8 +698,12 @@
           // Called on HOVER_REACH entry/exit transitions in checkHover(), not every tick.
           this._setRC = (ctrl, enable) => {
             if (!ctrl) return;
-            const hd  = ctrl.getAttribute('hand-controls');
-            const key = (hd && hd.hand === 'left') ? 'left' : 'right';
+            const hd   = ctrl.getAttribute('hand-controls');
+            // Fix 9: if hand-controls hasn't initialised yet, fall back to entity ID.
+            // Without this, a null hd silently defaults to 'right', leaving the left
+            // controller's _rcEnabled.left permanently stale.
+            const hand = (hd && hd.hand) || (ctrl.id === 'left-hand' ? 'left' : 'right');
+            const key  = hand === 'left' ? 'left' : 'right';
             if (this._rcEnabled[key] === enable) return;   // already correct — no-op
             this._rcEnabled[key] = enable;
             // Manipulate the Three.js raycaster layer mask directly.
@@ -1129,11 +1142,14 @@
             // querying the DOM or traversing raycaster intersection arrays.
             this._audioPanelEls = Array.from(document.querySelectorAll('[panel-audio]'));
 
-            // Guard: blocks curl grab while a folio hotspot popup is targeted so
-            // the user can interact with info panels without accidentally turning the page.
+            // Guard: blocks curl grab while any hotspot info panel is currently open.
+            // Fix 2: replaced targetedPanel check (which is always null in VR because
+            // the folio is on layer 2 and invisible to the raycaster in State B) with a
+            // direct panelOpen scan across all zones.  Works in both VR and desktop.
             this._isHotspotTargeted = () => {
               const hs = folio.components['folio-hotspots'];
-              return hs && hs.targetedPanel !== null;
+              if (!hs || !hs.zones) return false;
+              return hs.zones.some(z => z.panelOpen);
             };
 
             // Guard: blocks curl grab while either controller is within reach of an
@@ -1288,7 +1304,12 @@
           //   • _setRC(ctrl, true) → State A: re-enable layer 2.  Folio is hittable
           //     again from a distance.  Visual beam is restored.
           // Transition-only — _setRC is idempotent so no-ops if already in correct state.
-          const HOVER_REACH = 0.40;
+          // Fix 3: HOVER_REACH reduced from 0.40 to 0.30 to match vr-grab-rotate's
+          // REACH (0.30 m).  Previously HOVER_REACH > REACH meant the raycaster was
+          // masked (State B, folio invisible) before a grab was geometrically possible,
+          // creating a 10 cm dead zone where neither system was active.
+          // Now State B starts exactly when grab becomes possible.
+          const HOVER_REACH = 0.30;
           const checkHover = (ctrl, handKey) => {
             if (!ctrl) return;
             this.el.object3D.getWorldPosition(this._folioWorldPos);
@@ -1394,6 +1415,12 @@
           window.removeEventListener('mousemove', this._trackMouse);
           window.removeEventListener('mousemove', this._onMouseMoveCurl);
           window.removeEventListener('mouseup',   this._onMouseUpCurl);
+          // Fix 12: dispose GPU-uploaded Three.js objects to prevent VRAM leaks
+          // during hot-reload cycles in development.
+          if (this.curlGeo)     this.curlGeo.dispose();
+          if (this.curlMat)     this.curlMat.dispose();
+          if (this.backCurlMat) this.backCurlMat.dispose();
+          if (this.shadowMat)   this.shadowMat.dispose();
         }
       });
 
@@ -1575,6 +1602,29 @@
           }
         },
 
+        // ── _getGP: resolve Gamepad for a controller ──────────────────────────
+        // Mirrors the two-attempt strategy used by pulseHaptic and page-curl:
+        // tracked-controls component chain first, navigator.getGamepads() scan
+        // second (handles the first few frames before XR sources are bound).
+        _getGP: function (ctrl) {
+          if (!ctrl) return null;
+          var tc = ctrl.components && ctrl.components['tracked-controls'];
+          if (tc && tc.controller && tc.controller.gamepad) return tc.controller.gamepad;
+          if (!navigator.getGamepads) return null;
+          var hd   = ctrl.getAttribute('hand-controls');
+          var hand = hd && hd.hand;
+          if (!hand) return null;
+          var pads = navigator.getGamepads();
+          for (var i = 0; i < pads.length; i++) {
+            var gp = pads[i];
+            if (!gp || !gp.connected) continue;
+            var id = gp.id.toLowerCase();
+            if (hand === 'left'  && id.indexOf('left')  !== -1) return gp;
+            if (hand === 'right' && id.indexOf('right') !== -1) return gp;
+          }
+          return null;
+        },
+
         tick: function (t, dt) {
           if (!this.isVR || !this._folio) return;
 
@@ -1609,6 +1659,21 @@
 
             this._getTip(ctrl, this._tipWorld);
 
+            // ── Option A: grip-gate ───────────────────────────────────────────
+            // pokeArmed is true when grip (buttons[1]) ≥ 0.5 AND the full
+            // three-button grab combo is NOT active (comboVal < 0.5).
+            //
+            // This cleanly partitions the input space:
+            //   grip alone           → pokeArmed = true  (poke fires on contact)
+            //   grip + trigger + A/X → pokeArmed = false (grab/curl owns the folio)
+            //   no grip              → pokeArmed = false (hover only, no action)
+            //
+            // Hover highlights are shown regardless of pokeArmed so the user
+            // gets spatial feedback even before curling their fingers.
+            var gp       = this._getGP(ctrl);
+            var gripVal  = gp && gp.buttons[1] ? Math.max(0, Math.min(1, gp.buttons[1].value)) : 0;
+            var pokeArmed = gripVal >= 0.5 && comboVal(gp) < 0.5;
+
             // ── Hotspot zones (folio-local space) ─────────────────────────────
             if (hs && nZones > 0) {
               this._tipLocal.copy(this._tipWorld);
@@ -1622,9 +1687,10 @@
                 if (!inXY) continue;
                 var absZ = Math.abs(this._tipLocal.z);
                 if (absZ <= POKE_DEPTH) {
-                  // Promote to contact (never downgrade).
+                  // Promote to contact (never downgrade within this tick).
                   if (this._zoneState[zi] < 2) this._zoneState[zi] = 2;
-                  if (this._pokeCooldown[key] <= 0) {
+                  // Action only fires when grip is held but full combo is not.
+                  if (pokeArmed && this._pokeCooldown[key] <= 0) {
                     hs.pokeToggle(zi, ctrl);
                     this._pokeCooldown[key] = 600;
                   }
@@ -1640,7 +1706,8 @@
               var dist = this._tipWorld.distanceTo(this._btnWorld);
               if (dist <= BUTTON_POKE_RADIUS) {
                 if (this._btnState[bi] < 2) this._btnState[bi] = 2;
-                if (this._pokeCooldown[key] <= 0) {
+                // Action only fires when grip is held but full combo is not.
+                if (pokeArmed && this._pokeCooldown[key] <= 0) {
                   this._buttons[bi].el.dispatchEvent(
                     new MouseEvent('click', { bubbles: true })
                   );
@@ -1729,6 +1796,13 @@
           });
         },
         tick: function () {
+          // Fix 8: In VR, the folio is on layer 2 and the raycaster has layer 2
+          // disabled in State B (hand near), so the folio is never in intersectedEls.
+          // Running the loop every tick would always return hitZoneIdx = -1, wasting
+          // two intersection array scans per frame.  Hotspot detection in VR is
+          // handled by finger-poke via pokeToggle() — exit immediately.
+          if (this.isVR) { this.targetedPanel = null; return; }
+
           const folio    = this.el;
           let hitZoneIdx = -1;
           const ctrls    = [this.rightCtrl, this.leftCtrl];
@@ -1839,6 +1913,54 @@
             const leftCtrl  = document.querySelector('#left-hand');
             if (rightCtrl) rightCtrl.addEventListener('abuttondown', toggle);
             if (leftCtrl)  leftCtrl.addEventListener('xbuttondown',  toggle);
+          });
+          // Fix 10: reset isTargeted on VR entry.
+          // If the desktop cursor was hovering over an audio panel when the user put
+          // on the headset, isTargeted would remain true in VR, causing the next A/X
+          // press to toggle audio even with no hand near the panel.
+          scene.addEventListener('enter-vr', () => { isTargeted = false; });
+        }
+      });
+
+      // ── help-panel ────────────────────────────────────────────────────────────
+      // Toggles the instruction overlay on B (right hand) or Y (left hand).
+      // Both buttons fire the same toggle so either hand can open or close it.
+      // A haptic pulse confirms each press.  The panel is hidden by default and
+      // is never visible on desktop — the component is a VR-only convenience.
+      AFRAME.registerComponent('help-panel', {
+        init: function () {
+          this._panel  = null;
+          this._open   = false;
+          this._rightCtrl = null;
+          this._leftCtrl  = null;
+
+          this.el.sceneEl.addEventListener('loaded', () => {
+            this._panel    = document.querySelector('#help-overlay');
+            this._rightCtrl = document.querySelector('#right-hand');
+            this._leftCtrl  = document.querySelector('#left-hand');
+
+            const toggle = (ctrl) => {
+              this._open = !this._open;
+              if (this._panel) this._panel.setAttribute('visible', this._open);
+              pulseHaptic(ctrl, 0.4, 35);
+            };
+
+            if (this._rightCtrl) {
+              this._rightCtrl.addEventListener('bbuttondown', (evt) => {
+                toggle(this._rightCtrl);
+              });
+            }
+            if (this._leftCtrl) {
+              this._leftCtrl.addEventListener('ybuttondown', (evt) => {
+                toggle(this._leftCtrl);
+              });
+            }
+          });
+
+          // Close the panel on VR exit so it does not persist on re-entry.
+          this.el.sceneEl.addEventListener('exit-vr', () => {
+            this._open = false;
+            if (this._panel) this._panel.setAttribute('visible', false);
           });
         }
       });
@@ -2005,9 +2127,13 @@
           window.addEventListener('click', startAudio, { once: true });
 
           // VR trigger — update prompt text on enter, wire A/X one-shot listeners.
-          // Controllers are always present by the time enter-vr fires on Quest 2.
+          // Fix 5: skip listener attachment if audio already started on desktop.
+          // Without this, the user's first intentional grab (which presses A/X as
+          // part of the combo) also fired startAudio, dismissing the prompt
+          // unexpectedly mid-session.
           this.el.addEventListener('enter-vr', () => {
-            if (!audioStarted) soundUiEl.setAttribute('value', 'PRESS A OR X TO START');
+            if (audioStarted) return;
+            soundUiEl.setAttribute('value', 'PRESS A OR X TO START');
             const rightCtrl = document.querySelector('#right-hand');
             const leftCtrl  = document.querySelector('#left-hand');
             const vrStart = () => startAudio();
@@ -2027,7 +2153,7 @@
 
   <body>
 
-    <a-scene scriptorium-logic finger-poke renderer="antialias: true; colorManagement: true; useLegacyLights: false;">
+    <a-scene scriptorium-logic finger-poke help-panel renderer="antialias: true; colorManagement: true; useLegacyLights: false;">
 
       <a-assets>
         <!-- Medieval library room model — loaded before any interaction is possible -->
@@ -2178,6 +2304,66 @@
                   width="1.1" position="0 0.8 0.02"></a-text>
           <a-text id="info-right-text" color="white" align="center" baseline="top"
                   width="1.05" position="0 0.6 0.02" wrap-count="50"></a-text>
+      </a-entity>
+
+      <!-- ── Help overlay ───────────────────────────────────────────────────────
+           Toggled by B (right hand) or Y (left hand).
+           Positioned directly in front of the lectern at comfortable reading
+           height. look-at-user keeps it yaw-facing the player at all times.
+           Hidden by default — only shown in VR on button press.
+      -->
+      <a-entity id="help-overlay"
+                position="0 2.05 -1.2"
+                look-at-user
+                visible="false">
+
+          <!-- Background panel -->
+          <a-plane width="1.55" height="2.30"
+                   color="#0d0d1a" opacity="0.93"
+                   material="side: double; transparent: true;">
+          </a-plane>
+
+          <!-- Gold border accent -->
+          <a-plane width="1.55" height="0.055"
+                   color="#FFD700" opacity="0.85"
+                   material="side: double;"
+                   position="0 1.12 0.002">
+          </a-plane>
+          <a-plane width="1.55" height="0.055"
+                   color="#FFD700" opacity="0.85"
+                   material="side: double;"
+                   position="0 -1.12 0.002">
+          </a-plane>
+
+          <!-- Title -->
+          <a-text value="SCRIPTORIUM — GUIDE"
+                  color="#FFD700"
+                  align="center"
+                  width="1.40"
+                  position="0 1.00 0.01"
+                  letter-spacing="2">
+          </a-text>
+
+          <!-- Divider line under title -->
+          <a-plane width="1.35" height="0.007"
+                   color="#FFD700" opacity="0.50"
+                   material="side: double;"
+                   position="0 0.88 0.002">
+          </a-plane>
+
+          <!-- Body text — single a-text block with manual line breaks.          -->
+          <!-- wrap-count 52 at width 1.38 keeps every line within the panel.   -->
+          <a-text
+            value="THE MANUSCRIPTS&#10;Two folios are on display: Liber Chronicarum&#10;(1493, Hartmann Schedel) and Liber&#10;Pluscardensis (before 1500). Latin text and&#10;English translation appear on the left panels.&#10;&#10;MOVING AROUND&#10;Left thumbstick — walk&#10;Right thumbstick — snap-turn 45°&#10;&#10;HANDLING THE FOLIO&#10;Grab &amp; rotate — hold Index Trigger + Grip&#10;+ A (or X) together near the folio, then move&#10;your hand to tilt and turn it.&#10;&#10;TURNING PAGES&#10;Same three-button grip, near a lower corner&#10;of the folio. Sweep your hand inward to peel&#10;the page. Release to turn or snap back.&#10;&#10;HOTSPOT ANNOTATIONS&#10;Gold regions on the folio show annotations.&#10;Hold Grip, then tap the region with your&#10;index finger to open or close the info box.&#10;&#10;SIDE BUTTONS (right of folio)&#10;ZOOM — move folio closer / reset position&#10;MATERIAL — toggle metallic sheen&#10;SWAP PAGE — jump directly to next folio&#10;SCALE — cycle small / normal / large&#10;MUTE — silence the ambient chant&#10;&#10;AUDIO PANELS (left of folio)&#10;Point your laser at a panel and press A or X&#10;to play the Latin or English reading aloud.&#10;Press again to stop.&#10;&#10;THIS GUIDE&#10;Press B or Y at any time to show or hide."
+            color="white"
+            align="left"
+            baseline="top"
+            width="1.38"
+            wrap-count="52"
+            line-height="38"
+            position="-0.67 0.82 0.01">
+          </a-text>
+
       </a-entity>
 
     </a-scene>
