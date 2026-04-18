@@ -1965,6 +1965,43 @@
         }
       });
 
+      // ── tile-floor ────────────────────────────────────────────────────────────
+      // Poly Haven surface materials are exported as a 1m × 1m plane.  Scaling
+      // the entity covers the area, but the texture scales with it — producing
+      // one enormous stone tile instead of a field of natural-sized flagstones.
+      // This component fires on model-loaded and sets RepeatWrapping on every
+      // texture in the material stack so the pattern tiles correctly at whatever
+      // scale the entity is given.
+      //
+      // schema:
+      //   repeat — how many tiles fit across the mesh in each axis.
+      //            For a 12 m floor with repeat:10, each tile is 1.2 m wide —
+      //            natural monastery flagstone proportions.
+      AFRAME.registerComponent('tile-floor', {
+        schema: { repeat: { type: 'number', default: 10 } },
+        init: function () {
+          this.el.addEventListener('model-loaded', () => {
+            const mesh = this.el.getObject3D('mesh');
+            if (!mesh) return;
+            const r = this.data.repeat;
+            mesh.traverse(function (node) {
+              if (!node.isMesh || !node.material) return;
+              // Cover all PBR texture slots present on Poly Haven exports.
+              var slots = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap'];
+              slots.forEach(function (key) {
+                var tex = node.material[key];
+                if (!tex) return;
+                tex.wrapS      = THREE.RepeatWrapping;
+                tex.wrapT      = THREE.RepeatWrapping;
+                tex.repeat.set(r, r);
+                tex.needsUpdate = true;
+              });
+              node.material.needsUpdate = true;
+            });
+          });
+        }
+      });
+
       AFRAME.registerComponent('scriptorium-logic', {
         init: function () {
           const folio        = document.querySelector('#folio-object');
@@ -2158,6 +2195,9 @@
       <a-assets>
         <!-- Medieval library room model — loaded before any interaction is possible -->
         <a-asset-item id="library-gltf" src="medievallibrary1.glb" response-type="arraybuffer"></a-asset-item>
+        <!-- Monastery stone floor — Poly Haven PBR surface, 1k textures.
+             GLTF references bin + textures via relative paths inside assets/.  -->
+        <a-asset-item id="floor-gltf" src="assets/monastery_stone_floor_1k.gltf" response-type="arraybuffer"></a-asset-item>
         <img id="manuscript1" src="folio.jpg">
         <img id="manuscript2" src="folio2.jpg">
         <audio id="music-track"    src="chant.mp3"      preload="auto"></audio>
@@ -2199,6 +2239,26 @@
         position="0 0 4"
         rotation="0 180 0"
         scale="17 17 17">
+      </a-gltf-model>
+
+      <!-- ── Monastery stone floor ───────────────────────────────────────────
+           Poly Haven surface material exported as a 1 m × 1 m plane.
+           Scaled to 14 m × 14 m to cover the full interaction zone:
+             User origin (0,0,0), folio (0,1.1,−1.4), library kit (0,0,4).
+           Centred at z=2 so coverage runs from z=−5 to z=+9 and x=−7 to x=+7.
+           Raised 1 cm (y=0.01) above the aframe-environment ground plane to
+           prevent z-fighting without any visible gap at eye level.
+           tile-floor repeat:12 gives each stone roughly 1.15 m across —
+           natural monastery flagstone proportions at this scale.
+      -->
+      <a-gltf-model
+        id="stone-floor"
+        src="#floor-gltf"
+        position="0 0.01 2"
+        rotation="0 0 0"
+        scale="14 1 14"
+        tile-floor="repeat: 12"
+        shadow="receive: true; cast: false">
       </a-gltf-model>
 
       <!-- Shared lighting ───────────────────────────────────────────────────
