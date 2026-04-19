@@ -1483,6 +1483,10 @@
       });
 
       AFRAME.registerComponent('flicker', {
+        // brightness: scales the whole intensity output.  Default 1.0 = original
+        // desk-candle behaviour (range 0.9–1.8).  Set e.g. brightness:0.28 for
+        // bookcase candles (range ≈0.25–0.50) — subtle without a code fork.
+        schema: { brightness: { type: 'number', default: 1.0 } },
         init: function () {
           const p      = this.el.getAttribute('position');
           this.baseX   = p ? p.x : 0;
@@ -1498,9 +1502,10 @@
           this.el.object3D.position.set(this.baseX+driftX, this.baseY+driftY, this.baseZ);
           if (t - this.lastLightUpdate > 50) {
             this.lastLightUpdate = t;
-            const intensity = Math.max(0.9, Math.min(1.8,
+            const base = Math.max(0.9, Math.min(1.8,
               1.2 + Math.sin(t*0.00035)*0.25+0.25 + Math.sin(t*0.0023)*0.10 + (Math.random()-0.5)*0.15));
-            const t_col = (intensity-0.9)/0.9;
+            const intensity = base * this.data.brightness;
+            const t_col = (base - 0.9) / 0.9;
             this.el.setAttribute('light', {
               intensity: intensity,
               color: 'rgb(255,'+Math.round(119+t_col*119)+','+Math.round(51+t_col*85)+')'
@@ -2329,11 +2334,10 @@
       </a-circle>
 
       <!-- Shared lighting ───────────────────────────────────────────────────
-           Ambient reduced to 0.3 so the desk candle (below) does real lighting
-           work rather than fighting a bright global fill.  The two wall-sconce
-           point lights remain for room fill, unchanged.
+           Ambient raised to 0.45 — scene was too dark after the candle was
+           moved off the folio.  Wall sconces unchanged.
       -->
-      <a-entity light="type: ambient; color: #ffe4b5; intensity: 0.3;"></a-entity>
+      <a-entity light="type: ambient; color: #ffe4b5; intensity: 0.45;"></a-entity>
       <a-entity light="type: point; color: #e8823a; intensity: 1.2; distance: 9; decay: 2;"
                 position="-3.5 2.5 -2.0"></a-entity>
       <a-entity light="type: point; color: #e8823a; intensity: 1.2; distance: 9; decay: 2;"
@@ -2367,14 +2371,15 @@
       </a-entity>
 
       <!-- ── Desk table ──────────────────────────────────────────────────────
-           Placed to the right of the lectern (+X) and slightly further back
-           (−Z) so it doesn't intrude on the folio interaction zone.
+           Moved to x=1.2, z=−1.6 — forward of the lectern (z=−2.2) so the
+           candle flame is in front of the folio face, illuminating it from
+           the near-right rather than from behind.
            Table is ~0.9 m tall at scale 1 1 1 (metres export).
       -->
       <a-gltf-model
         id="desk-table"
         src="#table-gltf"
-        position="0.9 0 -2.6"
+        position="1.2 0 -1.6"
         rotation="0 180 0"
         scale="1 1 1"
         model-error-handler>
@@ -2382,54 +2387,59 @@
 
       <!-- ── Desk candle ─────────────────────────────────────────────────────
            Sits on top of the table: y = table height (0.9 m).
-           Candle is ~0.19 m tall so the flame tip is at world y ≈ 1.09 m.
-           The GLB may have a built-in flame mesh animation — A-Frame plays
-           GLB animations automatically, so no extra attribute is needed.
-           The actual illumination comes from the separate flame-light entity
-           below, not from the mesh itself.
+           Candle flame tip at world y ≈ 1.09 m.
       -->
       <a-gltf-model
         id="desk-candle"
         src="#candle1-gltf"
-        position="0.9 0.9 -2.6"
+        position="1.2 0.9 -1.6"
         rotation="0 0 0"
         scale="1 1 1"
         model-error-handler>
       </a-gltf-model>
 
       <!-- ── Desk candle flame light ──────────────────────────────────────────
-           Fixed world-space point light at the candle flame tip position:
-             x = 0.9  (same as table/candle)
-             y = 1.09 (table 0.9 m + candle 0.19 m)
-             z = −2.6 (same as table/candle)
-           The flicker component reads this position in init() as its base
-           and drifts the light ±1.5 cm — natural flame sway.  It also
-           modulates intensity and colour temperature each tick.
-           Intensity 1.8, distance 4 m: warm rake light across the folio
-           and the stone floor without washing out the whole room.
-           This replaces the old #candle light that was a folio child and
-           incorrectly moved with the manuscript when grabbed.
+           Flame tip at (1.2, 1.09, −1.6) — forward and right of the folio
+           (0, ?, −2.2) so light rakes across the front face of the manuscript.
+           Intensity raised to 2.2 and distance to 5 m to better fill the scene.
       -->
       <a-entity id="desk-flame"
-                light="type: point; color: #ffcc77; intensity: 1.8; distance: 4; decay: 2;"
-                position="0.9 1.09 -2.6"
+                light="type: point; color: #ffcc77; intensity: 2.2; distance: 5; decay: 2;"
+                position="1.2 1.09 -1.6"
                 flicker>
       </a-entity>
 
       <!-- ── Folio fill light ────────────────────────────────────────────────
-           Soft, non-flickering fill positioned between the candle and the
-           folio centre.  Ensures the manuscript remains readable at all
-           heights — when zoomed in or when the user stands — without
-           competing with the desk candle's warm drama.
-           Intensity kept low (0.45) so it fills rather than flattens.
+           Raised to intensity 0.7 to compensate for the scene being too dark.
+           Positioned between the desk candle and the folio centre.
       -->
-      <a-entity light="type: point; color: #ffe4c0; intensity: 0.45; distance: 2.5; decay: 2;"
-                position="0.4 1.5 -2.3">
+      <a-entity light="type: point; color: #ffe4c0; intensity: 0.7; distance: 3.0; decay: 2;"
+                position="0.5 1.55 -1.9">
       </a-entity>
+
+      <!-- ── Bookcase candle lights ──────────────────────────────────────────
+           Four subtle flickering point lights matching the candles/lanterns
+           visible on the library bookcase units.  brightness:0.28 on the
+           flicker component scales the output to range ≈0.25–0.50 — warm
+           backlighting that separates the bookcases from the darkness without
+           competing with the desk candle.
+           Positions approximate the bookcase candle/lantern locations given
+           the library GLB is at position="0 0 4" rotation="0 180 0" scale=17.
+           Tune x/y/z per bookcase if the library model shifts.
+      -->
+      <a-entity light="type: point; color: #e8823a; intensity: 0.4; distance: 3.5; decay: 2;"
+                position="-4.0 2.8 1.5" flicker="brightness: 0.28"></a-entity>
+      <a-entity light="type: point; color: #e8823a; intensity: 0.4; distance: 3.5; decay: 2;"
+                position="-1.6 2.8 0.8" flicker="brightness: 0.28"></a-entity>
+      <a-entity light="type: point; color: #e8823a; intensity: 0.4; distance: 3.5; decay: 2;"
+                position=" 1.6 2.8 0.8" flicker="brightness: 0.28"></a-entity>
+      <a-entity light="type: point; color: #e8823a; intensity: 0.4; distance: 3.5; decay: 2;"
+                position=" 4.0 2.8 1.5" flicker="brightness: 0.28"></a-entity>
+
+      <!-- ── Medieval lectern ────────────────────────────────────────────────
            Positioned at z=−2.2 — further from the user than the original
            z=−1.4 to give comfortable viewing distance.
-           Rotation 0 0 0 faces the lectern's front toward the user
-           (the model's natural forward direction matches the user's −Z view).
+           Rotation 0 0 0 faces the lectern's front toward the user.
            Scale 1 1 1 assumes the GLB is in metres.
            The lectern is a static prop: no class, no interaction component.
       -->
