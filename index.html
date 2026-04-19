@@ -7,20 +7,45 @@
    <script src="https://unpkg.com/aframe-environment-component@1.3.7/dist/aframe-environment-component.min.js"></script>
     <script>
 
+      // ── model-error-handler ───────────────────────────────────────────────────
+      // Graceful fallback for GLB load failures on Quest 2.
+      // If a model fails to load (404, CORS block, memory limit, malformed file),
+      // A-Frame fires 'model-error' on the entity.  Without a listener this is
+      // silent — the model slot stays empty and anything depending on it may
+      // hang or behave unexpectedly.
+      // This component logs the failure to the console and hides the entity so
+      // nothing downstream breaks.  The assets timeout (30 s) ensures the scene
+      // starts regardless; this ensures the entity itself is cleaned up.
+      AFRAME.registerComponent('model-error-handler', {
+        init: function () {
+          this.el.addEventListener('model-error', (evt) => {
+            console.warn('[model-error-handler] Failed to load model on',
+              this.el.id || this.el.tagName, '—', evt.detail && evt.detail.src);
+            this.el.setAttribute('visible', false);
+          });
+        }
+      });
+
       AFRAME.registerComponent('look-at-user', {
         init: function () {
-          this.targetPos = new THREE.Vector3();
-          this.panelPos  = new THREE.Vector3();
+          this.targetPos  = new THREE.Vector3();
+          this.panelPos   = new THREE.Vector3();
+          this._tickCount = 0;   // throttle counter — update every 4th frame
         },
         tick: function () {
+          // Throttle: run every 4th frame (~18 Hz at 72 Hz).
+          // Panels move slowly so the update cadence is imperceptible.
+          // Skip entirely when the entity is invisible — saves 3 out of 4
+          // calls even when visible, and 4 out of 4 when hidden.
+          this._tickCount++;
+          if (this._tickCount < 4) return;
+          this._tickCount = 0;
+          if (!this.el.object3D.visible) return;
           const sceneEl  = this.el.sceneEl;
           const cameraEl = sceneEl.camera ? sceneEl.camera.el : null;
           if (!cameraEl) return;
           cameraEl.object3D.getWorldPosition(this.targetPos);
           this.el.object3D.getWorldPosition(this.panelPos);
-          // Fix 1: pass the panel's own Y so only yaw is applied.
-          // Passing targetPos.y caused the panels to pitch up/down as the user
-          // crouched or stood, skewing text in the headset.
           this.el.object3D.lookAt(this.targetPos.x, this.panelPos.y, this.targetPos.z);
         }
       });
@@ -2074,10 +2099,10 @@
           document.querySelector('#zoom-button').addEventListener('click', () => {
             playClick(); zoomed = !zoomed;
             infoPanel.setAttribute('visible', !zoomed);
-            // Zoom baseline is now 0 1.4 −2.0 (post-lift interaction position).
+            // Zoom baseline is now 0 1.55 −2.0 (post-lift interaction position).
             zoomAnchor.setAttribute('animation', {
               property: 'position',
-              to: zoomed ? '0 1.8 -1.4' : '0 1.4 -2.0',
+              to: zoomed ? '0 1.9 -1.4' : '0 1.55 -2.0',
               dur: 800, easing: 'easeInOutQuad'
             });
           });
@@ -2149,8 +2174,8 @@
             // Animate zoom-anchor to interaction position
             zoomAnchor.setAttribute('animation', {
               property: 'position',
-              from: '0 1.15 -2.2',
-              to:   '0 1.4 -2.0',
+              from: '0 1.35 -2.2',
+              to:   '0 1.55 -2.0',
               dur: LIFT_DUR, easing: EASE
             });
 
@@ -2214,9 +2239,13 @@
 
   <body>
 
-    <a-scene scriptorium-logic finger-poke help-panel renderer="antialias: true; colorManagement: true; useLegacyLights: false;">
+    <a-scene scriptorium-logic finger-poke help-panel
+             renderer="antialias: false; colorManagement: true; useLegacyLights: true;">
 
-      <a-assets>
+      <!-- timeout="30000": if any asset fails to load within 30 s the scene
+           continues anyway rather than hanging on a white screen forever.
+           Critical on Quest 2 where a stalled GLB load kills the session. -->
+      <a-assets timeout="30000">
         <!-- Medieval library room model — loaded before any interaction is possible -->
         <a-asset-item id="library-gltf"  src="medievallibrary1.glb"  response-type="arraybuffer"></a-asset-item>
         <!-- Lectern — reading stand the folio rests on at scene start -->
@@ -2349,7 +2378,8 @@
         src="#lectern-gltf"
         position="0 0 -2.2"
         rotation="0 0 0"
-        scale="1 1 1">
+        scale="1 1 1"
+        model-error-handler>
       </a-gltf-model>
 
       <!-- ── Folio anchor — resting state ──────────────────────────────────
@@ -2360,7 +2390,7 @@
            rotation 0 when the experience begins.
            button-group and info-panel start hidden; they reveal after the lift.
       -->
-      <a-entity id="zoom-anchor" position="0 1.15 -2.2">
+      <a-entity id="zoom-anchor" position="0 1.35 -2.2">
 
           <a-plane id="folio-object" class="clickable"
                    drag-rotate vr-grab-rotate page-curl folio-hotspots
