@@ -2074,8 +2074,11 @@
           document.querySelector('#zoom-button').addEventListener('click', () => {
             playClick(); zoomed = !zoomed;
             infoPanel.setAttribute('visible', !zoomed);
+            // Zoom baseline is now 0 1.4 −1.2 (post-lift interaction position).
             zoomAnchor.setAttribute('animation', {
-              property: 'position', to: zoomed ? '0 1.5 -0.6' : '0 1.1 -1.4', dur: 800, easing: 'easeInOutQuad'
+              property: 'position',
+              to: zoomed ? '0 1.8 -0.6' : '0 1.4 -1.2',
+              dur: 800, easing: 'easeInOutQuad'
             });
           });
 
@@ -2121,6 +2124,64 @@
             audioStarted = true;
             if (soundEl.components.sound) soundEl.components.sound.playSound();
             soundUiEl.setAttribute('visible', 'false');
+
+            // ── Lectern lift sequence ─────────────────────────────────────────
+            // Three simultaneous animations on the folio transform, then a
+            // staggered reveal of the UI panels once the folio has settled.
+            //
+            // 1. zoom-anchor rises from the lectern surface (y=0.95) to the
+            //    interaction position (y=1.4) and floats slightly forward
+            //    (z=−1.4 → z=−1.2) to clear the lectern geometry.
+            // 2. folio-object rotation straightens from the −20° resting lean
+            //    to fully upright (0°), matching the anchor's lift.
+            // 3. folio-object scale grows from 0.7 (compact on lectern) to 1.0.
+            //
+            // After 1000 ms (lift nearly complete):
+            //   - text panels fade in (translation, transcription, info-right)
+            // After 1300 ms (lift settled):
+            //   - button-group and info-panel appear beside the folio
+
+            const LIFT_DUR  = 1200;  // ms — anchor position tween
+            const SCALE_DUR = 1000;  // ms — folio scale tween
+            const TILT_DUR  = 1000;  // ms — folio rotation tween
+            const EASE      = 'easeInOutQuad';
+
+            // Animate zoom-anchor to interaction position
+            zoomAnchor.setAttribute('animation', {
+              property: 'position',
+              from: '0 0.95 -1.4',
+              to:   '0 1.4 -1.2',
+              dur: LIFT_DUR, easing: EASE
+            });
+
+            // Straighten folio from resting lean
+            folio.setAttribute('animation__tilt', {
+              property: 'rotation',
+              from: '-20 0 0',
+              to:   '0 0 0',
+              dur: TILT_DUR, easing: EASE
+            });
+
+            // Grow folio to full interaction scale
+            folio.setAttribute('animation__scale', {
+              property: 'scale',
+              from: '0.7 0.7 0.7',
+              to:   '1 1 1',
+              dur: SCALE_DUR, easing: EASE
+            });
+
+            // Reveal text panels while the folio is still rising
+            setTimeout(() => {
+              document.querySelector('#translation-panel').setAttribute('visible', true);
+              document.querySelector('#transcription-panel').setAttribute('visible', true);
+              document.querySelector('#info-right-panel').setAttribute('visible', true);
+            }, 1000);
+
+            // Reveal folio controls once the lift has settled
+            setTimeout(() => {
+              document.querySelector('#button-group').setAttribute('visible', true);
+              infoPanel.setAttribute('visible', true);
+            }, 1300);
           };
 
           // Desktop trigger — fires once on any click, then removes itself.
@@ -2157,7 +2218,9 @@
 
       <a-assets>
         <!-- Medieval library room model — loaded before any interaction is possible -->
-        <a-asset-item id="library-gltf" src="medievallibrary1.glb" response-type="arraybuffer"></a-asset-item>
+        <a-asset-item id="library-gltf"  src="medievallibrary1.glb"  response-type="arraybuffer"></a-asset-item>
+        <!-- Lectern — reading stand the folio rests on at scene start -->
+        <a-asset-item id="lectern-gltf"  src="medievallectern.glb"   response-type="arraybuffer"></a-asset-item>
         <!-- Monastery stone floor textures (Poly Haven, 1k).
              Loaded as plain images so A-Frame's material component can apply
              them directly with UV repeat — avoids the GLTF mesh shape problem. -->
@@ -2273,12 +2336,37 @@
         </a-entity>
       </a-entity>
 
-      <a-entity id="zoom-anchor" position="0 1.1 -1.4">
+      <!-- ── Medieval lectern ────────────────────────────────────────────────
+           Positioned at the same X/Z as the folio (0, 0, −1.4) so the folio
+           rests directly above it.  Rotated 180° to face the user.
+           Scale 1 1 1 assumes the GLB is in metres — adjust if it appears
+           too large or small after first load.
+           The lectern is a static prop: no class, no interaction component.
+      -->
+      <a-gltf-model
+        id="lectern-model"
+        src="#lectern-gltf"
+        position="0 0 -1.4"
+        rotation="0 180 0"
+        scale="1 1 1">
+      </a-gltf-model>
+
+      <!-- ── Folio anchor — resting state ──────────────────────────────────
+           zoom-anchor y=0.95 places the folio just above the lectern reading
+           surface.  On startAudio it lifts to y=1.4, z=−1.2 (interaction pos).
+           folio-object starts at scale 0.7 and rotation −20° on X (leaning
+           back on the sloped lectern surface), then animates to scale 1,
+           rotation 0 when the experience begins.
+           button-group and info-panel start hidden; they reveal after the lift.
+      -->
+      <a-entity id="zoom-anchor" position="0 0.95 -1.4">
 
           <a-plane id="folio-object" class="clickable"
                    drag-rotate vr-grab-rotate page-curl folio-hotspots
                    src="#manuscript1"
-                   position="0 0 0" rotation="0 0 0" width="1.1" height="0.8"
+                   position="0 0 0" rotation="-20 0 0"
+                   scale="0.7 0.7 0.7"
+                   width="1.1" height="0.8"
                    material="shader: standard; metalness: 0.1; roughness: 0.8; side: double;">
 
               <a-entity id="candle" light="type: point; color: #ffcc77; intensity: 1.6; distance: 4;"
@@ -2292,7 +2380,8 @@
 
           </a-plane>
 
-          <a-entity id="button-group" position="0.9 0 0.1" rotation="0 -25 0">
+          <!-- Hidden until folio lift animation completes -->
+          <a-entity id="button-group" position="0.9 0 0.1" rotation="0 -25 0" visible="false">
               <a-sphere id="zoom-button"  class="clickable" haptic-button position="0 0.25 0"  radius="0.04" color="#FFD700"><a-text value="ZOOM/RESET" position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
               <a-sphere id="mat-button"   class="clickable" haptic-button position="0 0.12 0"  radius="0.04" color="#C0C0C0"><a-text value="MATERIAL"   position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
               <a-sphere id="swap-button"  class="clickable" haptic-button position="0 0 0"     radius="0.04" color="#cd7f32"><a-text value="SWAP PAGE"  position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
@@ -2303,7 +2392,8 @@
               </a-box>
           </a-entity>
 
-          <a-entity id="info-panel" position="-0.9 0 0.1" rotation="0 35 0">
+          <!-- Hidden until folio lift animation completes -->
+          <a-entity id="info-panel" position="-0.9 0 0.1" rotation="0 35 0" visible="false">
               <a-plane width="0.6" height="0.4" color="#111" opacity="0.9"></a-plane>
               <a-text id="info-text" value="Liber Chronicarum, 1493,\nHartmann Schedel"
                       color="#FFD700" align="center" width="0.7" position="0 0 0.05"></a-text>
@@ -2311,8 +2401,10 @@
 
       </a-entity>
 
+      <!-- Hidden until folio lift animation completes -->
       <a-entity id="translation-panel"
                 position="-1.5 1.5 -0.6" look-at-user
+                visible="false"
                 panel-audio="type: english">
           <a-plane width="1.2" height="1.8" color="#111" opacity="0.9" material="side: double;"></a-plane>
           <a-text value="ENGLISH TRANSLATION" color="#FFD700" align="center" width="1.1" position="0 0.8 0.02"></a-text>
@@ -2320,8 +2412,10 @@
                   width="1.05" position="0 0.6 0.02" wrap-count="50"></a-text>
       </a-entity>
 
+      <!-- Hidden until folio lift animation completes -->
       <a-entity id="transcription-panel"
                 position="-1.5 1.5 0.6" look-at-user
+                visible="false"
                 panel-audio="type: latin">
           <a-plane width="1.2" height="1.8" color="#111" opacity="0.9" material="side: double;"></a-plane>
           <a-text value="LATIN TRANSCRIPTION" color="#FFD700" align="center" width="1.1" position="0 0.8 0.02"></a-text>
@@ -2329,8 +2423,10 @@
                   width="1.05" position="0 0.6 0.02" wrap-count="50"></a-text>
       </a-entity>
 
+      <!-- Hidden until folio lift animation completes -->
       <a-entity id="info-right-panel"
-                position="1.5 1.5 -0.4" look-at-user>
+                position="1.5 1.5 -0.4" look-at-user
+                visible="false">
           <a-plane width="1.2" height="1.8" color="#111" opacity="0.9" material="side: double;"></a-plane>
           <a-text id="info-right-header" value="Test 1" color="#FFD700" align="center"
                   width="1.1" position="0 0.8 0.02"></a-text>
