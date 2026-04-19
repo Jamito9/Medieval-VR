@@ -2074,10 +2074,10 @@
           document.querySelector('#zoom-button').addEventListener('click', () => {
             playClick(); zoomed = !zoomed;
             infoPanel.setAttribute('visible', !zoomed);
-            // Zoom baseline is now 0 1.4 −1.2 (post-lift interaction position).
+            // Zoom baseline is now 0 1.4 −2.0 (post-lift interaction position).
             zoomAnchor.setAttribute('animation', {
               property: 'position',
-              to: zoomed ? '0 1.8 -0.6' : '0 1.4 -1.2',
+              to: zoomed ? '0 1.8 -1.4' : '0 1.4 -2.0',
               dur: 800, easing: 'easeInOutQuad'
             });
           });
@@ -2149,8 +2149,8 @@
             // Animate zoom-anchor to interaction position
             zoomAnchor.setAttribute('animation', {
               property: 'position',
-              from: '0 0.95 -1.4',
-              to:   '0 1.4 -1.2',
+              from: '0 1.15 -2.2',
+              to:   '0 1.4 -2.0',
               dur: LIFT_DUR, easing: EASE
             });
 
@@ -2337,29 +2337,30 @@
       </a-entity>
 
       <!-- ── Medieval lectern ────────────────────────────────────────────────
-           Positioned at the same X/Z as the folio (0, 0, −1.4) so the folio
-           rests directly above it.  Rotated 180° to face the user.
-           Scale 1 1 1 assumes the GLB is in metres — adjust if it appears
-           too large or small after first load.
+           Positioned at z=−2.2 — further from the user than the original
+           z=−1.4 to give comfortable viewing distance.
+           Rotation 0 0 0 faces the lectern's front toward the user
+           (the model's natural forward direction matches the user's −Z view).
+           Scale 1 1 1 assumes the GLB is in metres.
            The lectern is a static prop: no class, no interaction component.
       -->
       <a-gltf-model
         id="lectern-model"
         src="#lectern-gltf"
-        position="0 0 -1.4"
-        rotation="0 180 0"
+        position="0 0 -2.2"
+        rotation="0 0 0"
         scale="1 1 1">
       </a-gltf-model>
 
       <!-- ── Folio anchor — resting state ──────────────────────────────────
-           zoom-anchor y=0.95 places the folio just above the lectern reading
-           surface.  On startAudio it lifts to y=1.4, z=−1.2 (interaction pos).
+           zoom-anchor y=1.15 z=−2.2 places the folio above the lectern reading
+           surface at the new position.  On startAudio it lifts to y=1.4, z=−2.0.
            folio-object starts at scale 0.7 and rotation −20° on X (leaning
            back on the sloped lectern surface), then animates to scale 1,
            rotation 0 when the experience begins.
            button-group and info-panel start hidden; they reveal after the lift.
       -->
-      <a-entity id="zoom-anchor" position="0 0.95 -1.4">
+      <a-entity id="zoom-anchor" position="0 1.15 -2.2">
 
           <a-plane id="folio-object" class="clickable"
                    drag-rotate vr-grab-rotate page-curl folio-hotspots
