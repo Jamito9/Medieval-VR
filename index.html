@@ -171,7 +171,7 @@
           // PLAYER_RADIUS: treated as a circular capsule footprint.  0.22 m is
           // a tight but natural personal-space radius for seated/standing VR.
           this._obstacles = [
-            { cx:  0.0, cz: -2.2, rx: 0.35, rz: 0.35 },  // lectern
+            { cx:  0.0, cz: -2.2, rx: 0.28, rz: 0.28 },  // lectern
             { cx:  1.2, cz: -1.6, rx: 0.55, rz: 0.35 },  // table
           ];
           this._PLAYER_RADIUS = 0.22;
@@ -965,6 +965,12 @@
               fMesh.material.needsUpdate = true;
               // Force immediate GPU upload — critical on Quest 2 WebXR.
               if (renderer && renderer.initTexture) renderer.initTexture(tex);
+              // Hypothesis 5 fix: re-assert layer 2 every time we write a texture.
+              // If A-Frame rebuilt the folio mesh (e.g. after a setAttribute on the
+              // material or scale), the new mesh defaults to layer 0 and the layer 2
+              // assignment from scene 'loaded' is lost.  The camera has layer 2
+              // enabled so this has no visual cost — it is purely a guard.
+              fMesh.layers.set(2);
             };
 
             // Tier 1: our own preloaded cache (most reliable in WebXR)
@@ -1023,34 +1029,30 @@
               if (raw < 1) {
                 requestAnimationFrame(animate);
               } else {
-                setTimeout(() => {
+                // Hypothesis 4 fix: execute inside an XR frame, not a JS timer.
+                // setTimeout fires between XR frames — renderer.initTexture() called
+                // there may be a no-op because the XR compositor is not actively
+                // processing texture uploads between frames.
+                // Double rAF guarantees we are inside a compositor frame tick when
+                // the texture write and GPU upload happen:
+                //   rAF 1: let the final curl frame complete and compositor settle.
+                //   rAF 2: write texture, upload to GPU, reveal folio — all in one frame.
+                requestAnimationFrame(() => {
                   if (this._animAborted) return;
+                  requestAnimationFrame(() => {
+                    if (this._animAborted) return;
 
-                  // 1. Update page index, text panels and metadata FIRST so UI
-                  //    state is consistent before the texture changes.
-                  if (scene.doSwap) scene.doSwap(dir, true);
+                    // 1. Update page index, text panels and metadata FIRST.
+                    if (scene.doSwap) scene.doSwap(dir, true);
 
-                  // 2. Write the destination texture directly to Three.js.
-                  //    folio.setAttribute('src') is NEVER called in this path —
-                  //    not here, not in a deferred rAF. In A-Frame 1.4.0,
-                  //    setAttribute('src') synchronously triggers the material
-                  //    component's update(), which resets opacity to 1 (revealing
-                  //    the folio before the texture is on the GPU) AND queues an
-                  //    async texture-load callback that fires after resetCurl and
-                  //    overwrites material.map on Quest 2's XR compositor rAF
-                  //    queue — always winning the last write with a stale texture.
-                  //    Deferring setAttribute one rAF still races; the only safe
-                  //    fix is to never call it during the curl path at all.
-                  //    applyDestTex reads from _texCache (THREE.TextureLoader,
-                  //    preloaded at scene start) and calls renderer.initTexture()
-                  //    to force an immediate GPU upload before reveal.
-                  applyDestTex(capturedDestSrc);
+                    // 2. Write destination texture directly to Three.js.
+                    //    folio.setAttribute('src') is NEVER called in this path.
+                    applyDestTex(capturedDestSrc);
 
-                  // 3. Reveal the folio. Correct texture is already on the GPU.
-                  //    Nothing touches material.map after this point.
-                  if (this.isCurling) this.resetCurl();
-
-                }, 50);
+                    // 3. Reveal the folio. Correct texture is already on the GPU.
+                    if (this.isCurling) this.resetCurl();
+                  });
+                });
               }
             };
             requestAnimationFrame(animate);
@@ -1421,7 +1423,7 @@
             ctrl.object3D.getWorldPosition(this._ctrlPos);
             const inside = this._folioWorldPos.distanceTo(this._ctrlPos) <= HOVER_REACH;
             if (inside && !this._folioHoverActive[handKey]) {
-              pulseHaptic(ctrl, 0.25, 30);
+              pulseHaptic(ctrl, 0.45, 50);
               this._folioHoverActive[handKey] = true;
               this._setRC(ctrl, false);   // → State B: mask folio layer, hide beam
             } else if (!inside && this._folioHoverActive[handKey]) {
@@ -2663,7 +2665,7 @@
           <!-- Body text — single a-text block with manual line breaks.          -->
           <!-- wrap-count 52 at width 1.38 keeps every line within the panel.   -->
           <a-text
-            value="THE MANUSCRIPTS&#10;Two folios are on display: Liber Chronicarum&#10;(1493, Hartmann Schedel) and Liber&#10;Pluscardensis (before 1500). Latin text and&#10;English translation appear on the left panels.&#10;&#10;MOVING AROUND&#10;Left thumbstick — walk&#10;Right thumbstick — snap-turn 45°&#10;&#10;HANDLING THE FOLIO&#10;Grab &amp; rotate — hold Index Trigger + Grip&#10;+ A (or X) together near the folio, then move&#10;your hand to tilt and turn it.&#10;&#10;TURNING PAGES&#10;Same three-button grip, near a lower corner&#10;of the folio. Sweep your hand inward to peel&#10;the page. Release to turn or snap back.&#10;&#10;HOTSPOT ANNOTATIONS&#10;Gold regions on the folio show annotations.&#10;Hold Grip, then tap the region with your&#10;index finger to open or close the info box.&#10;&#10;SIDE BUTTONS (right of folio)&#10;ZOOM — move folio closer / reset position&#10;MATERIAL — toggle metallic sheen&#10;SWAP PAGE — jump directly to next folio&#10;SCALE — cycle small / normal / large&#10;MUTE — silence the ambient chant&#10;&#10;AUDIO PANELS (left of folio)&#10;Point your laser at a panel and press A or X&#10;to play the Latin or English reading aloud.&#10;Press again to stop.&#10;&#10;THIS GUIDE&#10;Press B or Y at any time to show or hide."
+            value="THE MANUSCRIPTS&#10;Two folios are on display: Liber Chronicarum&#10;(1493, Hartmann Schedel) and Liber&#10;Pluscardensis (before 1500). Latin text and&#10;English translation appear on the left panels.&#10;&#10;MOVING AROUND&#10;Left thumbstick — walk&#10;Right thumbstick — smooth turn&#10;&#10;HANDLING THE FOLIO&#10;Grab &amp; rotate — hold Index Trigger + Grip&#10;+ A (or X) together near the folio, then move&#10;your hand to tilt and turn it.&#10;&#10;TURNING PAGES&#10;Same three-button grip, near a lower corner&#10;of the folio. Sweep your hand inward to peel&#10;the page. Release to turn or snap back.&#10;&#10;HOTSPOT ANNOTATIONS&#10;Gold regions on the folio show annotations.&#10;Hold Grip, then tap the region with your&#10;index finger to open or close the info box.&#10;&#10;SIDE BUTTONS (right of folio)&#10;ZOOM — move folio closer / reset position&#10;MATERIAL — toggle metallic sheen&#10;SWAP PAGE — jump directly to next folio&#10;SCALE — cycle small / normal / large&#10;MUTE — silence the ambient music&#10;&#10;AUDIO PANELS (left of folio)&#10;Point your laser at a panel and press A or X&#10;to play the Latin or English reading aloud.&#10;Press again to stop.&#10;&#10;THIS GUIDE&#10;Press B or Y at any time to show or hide."
             color="white"
             align="left"
             baseline="top"
