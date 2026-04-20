@@ -1029,43 +1029,23 @@
               if (raw < 1) {
                 requestAnimationFrame(animate);
               } else {
-                // ── Quest 2 texture-swap fix ──────────────────────────────────
-                // All previous approaches wrote directly to Three.js material.map
-                // (TextureLoader, new THREE.Texture, initTexture) and failed on
-                // Quest 2 while working on desktop.  The SWAP PAGE button works
-                // because it calls folio.setAttribute('src', ...) — A-Frame's own
-                // material pipeline.  The curl path must use the same mechanism.
-                //
-                // Sequence:
-                //   rAF 1 — compositor settling frame after curl completes.
-                //   rAF 2 — update page index; tell A-Frame to load the new src
-                //            (folio is still opacity=0, so no visible flash);
-                //            also write directly as a same-frame belt-and-suspenders.
-                //   rAF 3 — A-Frame has processed the src change; reveal folio.
+                // The folio is never transparent (opacity=0 removed from startCurl).
+                // A-Frame's setAttribute is the canonical texture-swap path — it is
+                // exactly what the SWAP PAGE button uses and works reliably on Quest 2.
+                // rAF 1: compositor settling frame after curl animation finishes.
+                // rAF 2: swap page index, load new texture via A-Frame's pipeline,
+                //         then hide curlMesh — folio is already visible with new texture.
                 requestAnimationFrame(() => {
                   if (this._animAborted) return;
                   requestAnimationFrame(() => {
                     if (this._animAborted) return;
-
-                    // 1. Update page index, text panels and metadata.
+                    // Update page index and text panels.
                     if (scene.doSwap) scene.doSwap(dir, true);
-
-                    // 2. Apply texture via A-Frame's material pipeline — the same
-                    //    path that the SWAP PAGE button uses and that works reliably
-                    //    on Quest 2.  The folio is still transparent (opacity=0 from
-                    //    startCurl), so setAttribute firing its material update while
-                    //    the folio is hidden causes no visible flash.
+                    // Load new texture through A-Frame's material pipeline.
+                    // This is identical to the SWAP PAGE button path which works on Quest 2.
                     folio.setAttribute('src', capturedDestSrc);
-
-                    // 3. Direct Three.js write as immediate belt-and-suspenders.
-                    applyDestTex(capturedDestSrc);
-
-                    // 4. One more frame — A-Frame's material update has run by now;
-                    //    reveal the folio with the correct texture.
-                    requestAnimationFrame(() => {
-                      if (this._animAborted) return;
-                      if (this.isCurling) this.resetCurl();
-                    });
+                    // Hide curlMesh — folio now shows new texture.
+                    if (this.isCurling) this.resetCurl();
                   });
                 });
               }
@@ -1138,17 +1118,14 @@
               this.backCurlMat.metalness = folioMesh.material.metalness;
               this.backCurlMat.roughness = folioMesh.material.roughness;
 
-              // Hide the folio while the curl animation plays.
-              // Using opacity (not .visible) keeps the A-Frame material object stable.
-              folioMesh.material.transparent = true;
-              folioMesh.material.opacity     = 0;
-              folioMesh.material.needsUpdate = true;
-
-              // Texture is applied at commit time via applyDestTex() which uses
-              // _texCache (THREE.TextureLoader preloaded at scene startup).
-              // We do NOT call folio.setAttribute('src') here: that triggers
-              // A-Frame's async material pipeline which races with Three.js on
-              // Quest 2, causing delayed callbacks to overwrite the correct texture.
+              // NOTE: folio opacity is NOT set to 0 here.
+              // The curlMesh (z=0.001) sits in front of the folio (z=0) and
+              // visually covers it for the entire animation — opacity=0 is
+              // unnecessary.  Setting it was the root cause of the Quest 2
+              // texture-swap failure: folio.setAttribute('src', ...) triggers
+              // A-Frame's material.update() which reads data.opacity=1 (schema
+              // default) and resets opacity back to 1, fighting our direct
+              // Three.js write and breaking the texture swap timing in WebXR.
             }
 
             // backPage provides the visual destination texture backdrop during
@@ -1364,15 +1341,9 @@
           this._watchdog    = null;
           this._animAborted = true;
 
-          // Restore folio visibility. applyDestTex (or snapBack) has already
-          // set the correct material.map before this is called, so the revealed
-          // folio immediately shows the right texture with no flash.
-          const folioMesh = this.el.getObject3D('mesh');
-          if (folioMesh && folioMesh.material) {
-            folioMesh.material.opacity     = 1;
-            folioMesh.material.transparent = false;
-            folioMesh.material.needsUpdate = true;
-          }
+          // Folio opacity is not touched here — it was never set to 0 in
+          // startCurl (curlMesh covers the folio visually throughout the
+          // animation, making the opacity hide redundant and harmful).
 
           this.curlMesh.visible     = false;
           this.backCurlMesh.visible = false;
