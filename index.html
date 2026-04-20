@@ -815,11 +815,24 @@
             const lineObj = ctrl.getObject3D('line');
             if (lineObj) lineObj.visible = enable;
           };
-          // Key = asset selector string e.g. '#manuscript1'.
-          // Using THREE.TextureLoader guarantees the texture is fully decoded and
-          // GPU-uploadable, unlike new THREE.Texture(img) which may not be on Quest 2.
-          this._texCache = {};
-          this._texLoader = new THREE.TextureLoader();
+          // ── Texture preload ───────────────────────────────────────────────────
+          // Build _texCache from the <img> elements already decoded by A-Frame's
+          // asset system — NO second network request.
+          //
+          // Previous approach used THREE.TextureLoader.load(url, callback) which
+          // made a separate XHR fetch per image.  On Quest 2 in a WebXR session the
+          // Meta Browser throttles or silently drops background XHR requests fired
+          // from the 'loaded' event, so the callbacks never fired, _texCache was
+          // always empty, and applyDestTex fell through to Tier 3 (new THREE.Texture)
+          // without a synchronous GPU upload — causing the folio to show no change
+          // after a page curl in VR even though it worked fine on desktop.
+          //
+          // Direct construction is synchronous and executes before any user
+          // interaction is possible.  renderer.initTexture() forces an immediate
+          // GPU upload so the texture is on the compositor before the folio is
+          // revealed by resetCurl.
+          this._texCache  = {};
+          this._texLoader = null;   // no longer used — kept to avoid reference errors
 
           this._trackMouse = (e) => { this._mouseX = e.clientX; };
           window.addEventListener('mousemove', this._trackMouse);
@@ -843,25 +856,24 @@
             if (this._leftCtrl)  this._setRC(this._leftCtrl,  true);
           });
 
-          // Preload all page textures once the scene has finished loading.
-          // This runs before any user interaction, so textures are ready before
-          // the first page turn on both desktop and Quest 2 WebXR.
+          // Preload all page textures synchronously from already-decoded img elements.
+          // scene.pages is set by scriptorium-logic (on a-scene) before this listener
+          // fires (a-scene inits before folio-object children — DOM order guarantee).
           scene.addEventListener('loaded', () => {
             const pages = scene.pages;
             if (!pages) return;
+            const renderer = scene.renderer;
             pages.forEach(page => {
               const imgEl = document.querySelector(page.src);
               if (!imgEl) return;
-              // imgEl.src is the absolute URL e.g. http://192.168.x.x:8080/folio.jpg
-              const url = imgEl.src || imgEl.getAttribute('src');
-              if (!url) return;
-              this._texLoader.load(url, (tex) => {
-                // THREE.TextureLoader default flipY=true is correct for standard WebGL.
-                // Three.js r152+ (A-Frame 1.5+): manually-loaded textures default to
-                // NoColorSpace; declare sRGB so colours are gamma-decoded on-screen.
-                tex.colorSpace = 'srgb';
-                this._texCache[page.src] = tex;
-              });
+              // Build directly from the HTMLImageElement A-Frame already decoded.
+              const tex = new THREE.Texture(imgEl);
+              tex.colorSpace  = 'srgb';   // THREE.SRGBColorSpace in Three.js r152+
+              tex.needsUpdate = true;
+              // Force immediate GPU upload — eliminates the XR compositor timing
+              // window that caused blank/unchanged textures on Quest 2 after curl.
+              if (renderer && renderer.initTexture) renderer.initTexture(tex);
+              this._texCache[page.src] = tex;
             });
           });
 
