@@ -149,8 +149,33 @@
           this.rightCtrl = null;
           this._forward  = new THREE.Vector3();
           this._right    = new THREE.Vector3();
-          // Fix 6: pre-allocate world-up vector — avoids new THREE.Vector3 per tick.
+          // Fix 6: pre-allocated world-up vector — avoids new THREE.Vector3 per tick.
           this._up       = new THREE.Vector3(0, 1, 0);
+
+          // ── AABB obstacle list ────────────────────────────────────────────────
+          // Each entry is the world-space (X, Z) centre and half-extents (rx, rz)
+          // of a rectangular no-go zone.  Y is ignored — the player is always on
+          // the ground plane and furniture is never above head height.
+          //
+          // Lectern: centred at (0, −2.2), ~0.5 m wide, ~0.5 m deep.
+          //   rx=0.35, rz=0.35 gives a comfortable buffer around the pedestal base.
+          //   The 0.35 m player radius is added per-axis inside _resolveCollision,
+          //   so the effective blocked zone is (0.35 + 0.35) = 0.70 m wide total.
+          //
+          // Table: centred at (1.2, −1.6), ~1.0 m wide, ~0.6 m deep.
+          //   rx=0.55, rz=0.35 blocks the full tabletop footprint including legs.
+          //   Using the full footprint (not per-leg) is standard for WebXR —
+          //   the player cannot walk under the table either, but the table sits
+          //   against the right wall so this is never a path the user would want.
+          //
+          // PLAYER_RADIUS: treated as a circular capsule footprint.  0.22 m is
+          // a tight but natural personal-space radius for seated/standing VR.
+          this._obstacles = [
+            { cx:  0.0, cz: -2.2, rx: 0.35, rz: 0.35 },  // lectern
+            { cx:  1.2, cz: -1.6, rx: 0.55, rz: 0.35 },  // table
+          ];
+          this._PLAYER_RADIUS = 0.22;
+
           const scene = this.el.sceneEl;
           scene.addEventListener('enter-vr', () => { this.isVR = true;  });
           scene.addEventListener('exit-vr',  () => { this.isVR = false; });
@@ -159,11 +184,48 @@
             this.rightCtrl = document.querySelector('#right-hand');
           });
         },
+
+        // ── _resolveCollision ─────────────────────────────────────────────────
+        // Tests the rig position (px, pz) against every AABB obstacle.
+        // If the player's circular footprint (radius PLAYER_RADIUS) overlaps an
+        // obstacle box, the position is pushed out along the shortest separation
+        // axis (minimum translation vector — MTV).
+        //
+        // Algorithm: expand the AABB by PLAYER_RADIUS on all sides (Minkowski sum
+        // of the box with the player circle — approximated as a larger box).
+        // If the player centre is inside the expanded box, compute overlap on each
+        // axis and push out on the axis with the smaller overlap (MTV).
+        //
+        // This runs in O(n) where n = number of obstacles (currently 2).
+        // All arithmetic is on plain numbers — zero object allocation.
+        _resolveCollision: function (px, pz) {
+          const r = this._PLAYER_RADIUS;
+          for (var i = 0; i < this._obstacles.length; i++) {
+            var obs = this._obstacles[i];
+            var exRx = obs.rx + r;   // expanded half-extent X
+            var exRz = obs.rz + r;   // expanded half-extent Z
+            var dx   = px - obs.cx;
+            var dz   = pz - obs.cz;
+            var ox   = exRx - Math.abs(dx);  // overlap on X axis
+            var oz   = exRz - Math.abs(dz);  // overlap on Z axis
+            if (ox > 0 && oz > 0) {
+              // Player is inside the expanded box — push out on the smaller axis.
+              if (ox < oz) {
+                px += (dx > 0 ? ox : -ox);
+              } else {
+                pz += (dz > 0 ? oz : -oz);
+              }
+            }
+          }
+          return { x: px, z: pz };
+        },
+
         _getGamepad: function (ctrl) {
           if (!ctrl) return null;
           const tc = ctrl.components && ctrl.components['tracked-controls'];
           return (tc && tc.controller && tc.controller.gamepad) || null;
         },
+
         tick: function (t, dt) {
           if (!this.isVR) return;
           // Fix 7: guard dt — A-Frame can emit dt=0 on the first tick frame.
@@ -181,12 +243,21 @@
                 this._forward.y = 0;
                 this._forward.negate();
                 this._forward.normalize();
-                // Fix 6: use pre-allocated this._up instead of allocating per tick.
                 this._right.crossVectors(this._forward, this._up).normalize();
                 const speed = 0.004;
                 const pos   = this.el.object3D;
                 pos.position.addScaledVector(this._forward, -stickY * speed * safeDt);
                 pos.position.addScaledVector(this._right,    stickX * speed * safeDt);
+
+                // ── Collision resolution ──────────────────────────────────────
+                // After applying movement, test the new position against all
+                // obstacles and push back out if penetrating.
+                // Only runs when the thumbstick is active — zero cost when still.
+                const resolved = this._resolveCollision(
+                  pos.position.x, pos.position.z
+                );
+                pos.position.x = resolved.x;
+                pos.position.z = resolved.z;
               }
             }
           }
@@ -194,9 +265,6 @@
             const stickX  = rightGP.axes[2] || 0;
             const deadzone = 0.2;
             if (Math.abs(stickX) > deadzone) {
-              // Smooth continuous yaw — same dt-scaled pattern as left-stick movement.
-              // TURN_SPEED 0.0015 rad/ms gives ≈ 86°/s at full deflection (comfortable
-              // for seated VR; fast enough to scan the room without disorientation).
               const TURN_SPEED = 0.0015;
               this.el.object3D.rotation.y -= stickX * TURN_SPEED * safeDt;
             }
@@ -2102,10 +2170,15 @@
           this.el.doSwap = doSwap;
 
           document.querySelector('#zoom-button').addEventListener('click', () => {
+            // Guard: zoom is meaningless before the lift has run — the anchor is still
+            // at the resting position and button-group is not yet visible.
+            if (!audioStarted) return;
             playClick(); zoomed = !zoomed;
             infoPanel.setAttribute('visible', !zoomed);
-            // Zoom baseline is now 0 1.55 −2.0 (post-lift interaction position).
-            zoomAnchor.setAttribute('animation', {
+            // Use animation__zoom (named component) so this tween never conflicts
+            // with the animation__lift tween in startAudio (both target zoomAnchor
+            // position, but named components are independent — one does not cancel the other).
+            zoomAnchor.setAttribute('animation__zoom', {
               property: 'position',
               to: zoomed ? '0 1.9 -1.4' : '0 1.55 -2.0',
               dur: 800, easing: 'easeInOutQuad'
@@ -2159,25 +2232,23 @@
             // Three simultaneous animations on the folio transform, then a
             // staggered reveal of the UI panels once the folio has settled.
             //
-            // 1. zoom-anchor rises from the lectern surface (y=0.95) to the
-            //    interaction position (y=1.4) and floats slightly forward
-            //    (z=−1.4 → z=−1.2) to clear the lectern geometry.
-            // 2. folio-object rotation straightens from the −20° resting lean
-            //    to fully upright (0°), matching the anchor's lift.
-            // 3. folio-object scale grows from 0.7 (compact on lectern) to 1.0.
+            // 1. zoom-anchor rises from resting (y=1.35, z=−2.2) to interaction
+            //    position (y=1.55, z=−2.0), floating slightly forward off the lectern.
+            //    Uses animation__lift (named) so the zoom button's animation__zoom
+            //    tween on the same entity never cancels this one.
+            // 2. folio-object rotation straightens from −20° resting lean to 0°.
+            // 3. folio-object scale grows from 0.7 to 1.0.
             //
-            // After 1000 ms (lift nearly complete):
-            //   - text panels fade in (translation, transcription, info-right)
-            // After 1300 ms (lift settled):
-            //   - button-group and info-panel appear beside the folio
+            // After 1000 ms: text panels revealed.
+            // After 1300 ms: button-group and info-panel revealed.
 
             const LIFT_DUR  = 1200;  // ms — anchor position tween
             const SCALE_DUR = 1000;  // ms — folio scale tween
             const TILT_DUR  = 1000;  // ms — folio rotation tween
             const EASE      = 'easeInOutQuad';
 
-            // Animate zoom-anchor to interaction position
-            zoomAnchor.setAttribute('animation', {
+            // Animate zoom-anchor to interaction position (named to avoid zoom conflict)
+            zoomAnchor.setAttribute('animation__lift', {
               property: 'position',
               from: '0 1.35 -2.2',
               to:   '0 1.55 -2.0',
