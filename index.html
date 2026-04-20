@@ -1029,28 +1029,43 @@
               if (raw < 1) {
                 requestAnimationFrame(animate);
               } else {
-                // Hypothesis 4 fix: execute inside an XR frame, not a JS timer.
-                // setTimeout fires between XR frames — renderer.initTexture() called
-                // there may be a no-op because the XR compositor is not actively
-                // processing texture uploads between frames.
-                // Double rAF guarantees we are inside a compositor frame tick when
-                // the texture write and GPU upload happen:
-                //   rAF 1: let the final curl frame complete and compositor settle.
-                //   rAF 2: write texture, upload to GPU, reveal folio — all in one frame.
+                // ── Quest 2 texture-swap fix ──────────────────────────────────
+                // All previous approaches wrote directly to Three.js material.map
+                // (TextureLoader, new THREE.Texture, initTexture) and failed on
+                // Quest 2 while working on desktop.  The SWAP PAGE button works
+                // because it calls folio.setAttribute('src', ...) — A-Frame's own
+                // material pipeline.  The curl path must use the same mechanism.
+                //
+                // Sequence:
+                //   rAF 1 — compositor settling frame after curl completes.
+                //   rAF 2 — update page index; tell A-Frame to load the new src
+                //            (folio is still opacity=0, so no visible flash);
+                //            also write directly as a same-frame belt-and-suspenders.
+                //   rAF 3 — A-Frame has processed the src change; reveal folio.
                 requestAnimationFrame(() => {
                   if (this._animAborted) return;
                   requestAnimationFrame(() => {
                     if (this._animAborted) return;
 
-                    // 1. Update page index, text panels and metadata FIRST.
+                    // 1. Update page index, text panels and metadata.
                     if (scene.doSwap) scene.doSwap(dir, true);
 
-                    // 2. Write destination texture directly to Three.js.
-                    //    folio.setAttribute('src') is NEVER called in this path.
+                    // 2. Apply texture via A-Frame's material pipeline — the same
+                    //    path that the SWAP PAGE button uses and that works reliably
+                    //    on Quest 2.  The folio is still transparent (opacity=0 from
+                    //    startCurl), so setAttribute firing its material update while
+                    //    the folio is hidden causes no visible flash.
+                    folio.setAttribute('src', capturedDestSrc);
+
+                    // 3. Direct Three.js write as immediate belt-and-suspenders.
                     applyDestTex(capturedDestSrc);
 
-                    // 3. Reveal the folio. Correct texture is already on the GPU.
-                    if (this.isCurling) this.resetCurl();
+                    // 4. One more frame — A-Frame's material update has run by now;
+                    //    reveal the folio with the correct texture.
+                    requestAnimationFrame(() => {
+                      if (this._animAborted) return;
+                      if (this.isCurling) this.resetCurl();
+                    });
                   });
                 });
               }
@@ -2146,12 +2161,13 @@
           // doSwap: updates page counter, metadata, and text panels.
           //
           // When silent=true (called from the curl animation):
-            //   Texture was already applied by applyDestTex() via _texCache.
-            //   folio.setAttribute('src') is NOT called in the curl path —
-            //   this eliminates the A-Frame async race condition on Quest 2.
-            //
-            // When silent=false (called from the SWAP PAGE button):
-            //   Normal A-Frame setAttribute handles the texture load, same as before.
+          //   folio.setAttribute('src') is NOT called here — the curl path
+          //   calls it directly after doSwap with capturedDestSrc, while the
+          //   folio is still transparent, so A-Frame's pipeline applies the
+          //   correct texture before the folio is revealed.
+          //
+          // When silent=false (called from the SWAP PAGE button):
+          //   Normal A-Frame setAttribute handles the texture load.
           const doSwap = (dir, silent) => {
             if (!silent) playClick();
             // Close all open hotspot panels before the swap so no stale
