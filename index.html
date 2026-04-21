@@ -1029,23 +1029,26 @@
               if (raw < 1) {
                 requestAnimationFrame(animate);
               } else {
-                // The folio is never transparent (opacity=0 removed from startCurl).
-                // A-Frame's setAttribute is the canonical texture-swap path — it is
-                // exactly what the SWAP PAGE button uses and works reliably on Quest 2.
-                // rAF 1: compositor settling frame after curl animation finishes.
-                // rAF 2: swap page index, load new texture via A-Frame's pipeline,
-                //         then hide curlMesh — folio is already visible with new texture.
+                // Folio is hidden (data.opacity=0 set via setAttribute in startCurl).
+                // setAttribute('src') keeps it hidden because A-Frame reads data.opacity=0.
+                // rAF 1: compositor settling frame.
+                // rAF 2: swap src and page metadata (folio still hidden).
+                // rAF 3: reveal by setting opacity=1 via setAttribute, then cleanup.
                 requestAnimationFrame(() => {
                   if (this._animAborted) return;
                   requestAnimationFrame(() => {
                     if (this._animAborted) return;
                     // Update page index and text panels.
                     if (scene.doSwap) scene.doSwap(dir, true);
-                    // Load new texture through A-Frame's material pipeline.
-                    // This is identical to the SWAP PAGE button path which works on Quest 2.
+                    // Load new texture. data.opacity=0 so material.update() keeps it hidden.
                     folio.setAttribute('src', capturedDestSrc);
-                    // Hide curlMesh — folio now shows new texture.
-                    if (this.isCurling) this.resetCurl();
+                    // One more frame for A-Frame's material pipeline to apply the texture.
+                    requestAnimationFrame(() => {
+                      if (this._animAborted) return;
+                      // Reveal folio with new texture via setAttribute — stored in data.
+                      folio.setAttribute('material', 'opacity', 1);
+                      if (this.isCurling) this.resetCurl();
+                    });
                   });
                 });
               }
@@ -1077,14 +1080,11 @@
               } else {
                 setTimeout(() => {
                   if (!this._animAborted) {
-                    // Restore original texture directly before revealing
-                    const fMesh = folio.getObject3D('mesh');
-                    if (fMesh && fMesh.material && this._savedTexMap) {
-                      fMesh.material.map         = this._savedTexMap;
-                      fMesh.material.needsUpdate = true;
-                    }
-                    // Texture is restored via _savedTexMap (Three.js direct).
-                        // No folio.setAttribute('src') — avoids A-Frame async race on Quest 2.
+                    // Restore original texture via setAttribute (A-Frame pipeline).
+                    // data.opacity is still 0 so the folio stays hidden during restore.
+                    if (this._savedSrc) folio.setAttribute('src', this._savedSrc);
+                    // Reveal via setAttribute so data.opacity is set back to 1.
+                    folio.setAttribute('material', 'opacity', 1);
                     this.resetCurl();
                   }
                 }, 50);
@@ -1100,9 +1100,12 @@
             const dir        = side === 'right' ? 1 : -1;
             const nextIdx    = (currentIdx + dir + pages.length) % pages.length;
 
+            // Save the current page src so snapBack can restore it via setAttribute.
+            this._savedSrc = pages[currentIdx].src;
+
             const folioMesh = folio.getObject3D('mesh');
             if (folioMesh && folioMesh.material) {
-              // Snapshot current texture so snapBack can restore it
+              // Snapshot current texture for curlMesh (the peeling surface).
               this._savedTexMap = folioMesh.material.map || null;
 
               if (folioMesh.material.map) {
@@ -1117,16 +1120,15 @@
               this.curlMat.roughness     = folioMesh.material.roughness;
               this.backCurlMat.metalness = folioMesh.material.metalness;
               this.backCurlMat.roughness = folioMesh.material.roughness;
-
-              // NOTE: folio opacity is NOT set to 0 here.
-              // The curlMesh (z=0.001) sits in front of the folio (z=0) and
-              // visually covers it for the entire animation — opacity=0 is
-              // unnecessary.  Setting it was the root cause of the Quest 2
-              // texture-swap failure: folio.setAttribute('src', ...) triggers
-              // A-Frame's material.update() which reads data.opacity=1 (schema
-              // default) and resets opacity back to 1, fighting our direct
-              // Three.js write and breaking the texture swap timing in WebXR.
             }
+
+            // Hide folio via A-Frame's setAttribute so the value is stored in
+            // this.data.opacity = 0.  This means any later setAttribute('src', ...)
+            // call that triggers material.update() will read this.data.opacity = 0
+            // and keep the folio hidden — it will NOT reset to the schema default
+            // of 1.  This is the fix for the Quest 2 texture-swap bug where direct
+            // Three.js material.opacity writes were overwritten by A-Frame's update().
+            folio.setAttribute('material', 'opacity', 0);
 
             // backPage provides the visual destination texture backdrop during
             // the animation AND is a secondary source for applyDestTex (Tier 2).
@@ -1341,9 +1343,10 @@
           this._watchdog    = null;
           this._animAborted = true;
 
-          // Folio opacity is not touched here — it was never set to 0 in
-          // startCurl (curlMesh covers the folio visually throughout the
-          // animation, making the opacity hide redundant and harmful).
+          // Ensure folio is visible — belt-and-suspenders for the watchdog timeout
+          // path where neither _completeCurl nor _snapBack set opacity=1.
+          // Use setAttribute so data.opacity is also restored to 1.
+          this.el.setAttribute('material', 'opacity', 1);
 
           this.curlMesh.visible     = false;
           this.backCurlMesh.visible = false;
