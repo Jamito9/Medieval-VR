@@ -1029,27 +1029,55 @@
               if (raw < 1) {
                 requestAnimationFrame(animate);
               } else {
-                // Folio is hidden (data.opacity=0 set via setAttribute in startCurl).
-                // setAttribute('src') keeps it hidden because A-Frame reads data.opacity=0.
-                // rAF 1: compositor settling frame.
-                // rAF 2: swap src and page metadata (folio still hidden).
-                // rAF 3: reveal by setting opacity=1 via setAttribute, then cleanup.
+                // ── Definitive Quest 2 texture-swap fix ──────────────────────────
+                // The backPage a-plane sits at z=-0.004 behind the folio and has
+                // been showing the correct new texture throughout the animation —
+                // confirmed working on Quest 2.  That texture is already on the GPU.
+                //
+                // Rather than asking Quest 2 to load a new texture into the folio
+                // (which fails when the entity is hidden/transparent), we:
+                //   1. Grab the confirmed texture directly from backPage's material.
+                //   2. Reveal the folio (opacity=1 via setAttribute — synchronous).
+                //   3. Immediately (same JS turn) copy the GPU-resident texture
+                //      onto the folio material — no new load, no async gap.
+                //   4. Call setAttribute('src') while the entity is NOW VISIBLE
+                //      so Quest 2 won't defer it, syncing A-Frame's internal state.
+                //   5. resetCurl hides curlMesh.
                 requestAnimationFrame(() => {
                   if (this._animAborted) return;
-                  requestAnimationFrame(() => {
-                    if (this._animAborted) return;
-                    // Update page index and text panels.
-                    if (scene.doSwap) scene.doSwap(dir, true);
-                    // Load new texture. data.opacity=0 so material.update() keeps it hidden.
-                    folio.setAttribute('src', capturedDestSrc);
-                    // One more frame for A-Frame's material pipeline to apply the texture.
-                    requestAnimationFrame(() => {
-                      if (this._animAborted) return;
-                      // Reveal folio with new texture via setAttribute — stored in data.
-                      folio.setAttribute('material', 'opacity', 1);
-                      if (this.isCurling) this.resetCurl();
-                    });
-                  });
+
+                  // Step 1: grab confirmed texture from backPage (already on GPU).
+                  const bpMesh = this.backPage.getObject3D('mesh');
+                  const confirmedTex = bpMesh &&
+                                       bpMesh.material &&
+                                       bpMesh.material.map || null;
+
+                  // Step 2: update page index and text panels.
+                  if (scene.doSwap) scene.doSwap(dir, true);
+
+                  // Step 3: reveal folio — setAttribute is synchronous, update()
+                  // runs and completes before the next line executes.
+                  folio.setAttribute('material', 'opacity', 1);
+
+                  // Step 4: overwrite material.map with the GPU-resident texture
+                  // in the same JS turn — no render frame can occur between step 3
+                  // and here, so the compositor sees opacity=1 AND new map together.
+                  if (confirmedTex) {
+                    const fMesh = folio.getObject3D('mesh');
+                    if (fMesh && fMesh.material) {
+                      fMesh.material.map = confirmedTex;
+                      fMesh.material.needsUpdate = true;
+                      fMesh.layers.set(2);   // re-assert layer in case mesh was rebuilt
+                    }
+                  }
+
+                  // Step 5: setAttribute('src') while entity is visible — Quest 2
+                  // will not defer this.  Syncs A-Frame's internal data.src so the
+                  // next curl reads the correct current page src.
+                  folio.setAttribute('src', capturedDestSrc);
+
+                  // Step 6: hide curlMesh and clean up.
+                  if (this.isCurling) this.resetCurl();
                 });
               }
             };
