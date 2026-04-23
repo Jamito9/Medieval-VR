@@ -1055,28 +1055,32 @@
                   // Step 2: update page index and text panels.
                   if (scene.doSwap) scene.doSwap(dir, true);
 
-                  // Step 3: reveal folio — setAttribute is synchronous, update()
-                  // runs and completes before the next line executes.
+                  // Step 3: reveal folio — synchronous, update() runs and completes.
                   folio.setAttribute('material', 'opacity', 1);
 
                   // Step 4: overwrite material.map with the GPU-resident texture
-                  // in the same JS turn — no render frame can occur between step 3
-                  // and here, so the compositor sees opacity=1 AND new map together.
+                  // in the same JS turn as the reveal.
                   if (confirmedTex) {
                     const fMesh = folio.getObject3D('mesh');
                     if (fMesh && fMesh.material) {
                       fMesh.material.map = confirmedTex;
                       fMesh.material.needsUpdate = true;
-                      fMesh.layers.set(2);   // re-assert layer in case mesh was rebuilt
+                      fMesh.layers.set(2);
                     }
                   }
 
-                  // Step 5: setAttribute('src') while entity is visible — Quest 2
-                  // will not defer this.  Syncs A-Frame's internal data.src so the
-                  // next curl reads the correct current page src.
-                  folio.setAttribute('src', capturedDestSrc);
+                  // NOTE: folio.setAttribute('src') is intentionally omitted here.
+                  // Hypothesis 1 test: setAttribute('src') triggers A-Frame's
+                  // material.update() which synchronously nulls material.map while
+                  // starting an async load — overwriting the confirmed texture we
+                  // just copied from backPage.  Removing it tests whether that call
+                  // was destroying the fix.  A-Frame's internal data.src stays
+                  // stale but scene.currentAudioPage is correct via doSwap, so
+                  // the curl logic and all panels update correctly.
+                  // doSwap(dir, true) updates Latin, English, info-right, hover-text
+                  // and info-text panels — all supporting content changes correctly.
 
-                  // Step 6: hide curlMesh and clean up.
+                  // Step 5: hide curlMesh and clean up.
                   if (this.isCurling) this.resetCurl();
                 });
               }
