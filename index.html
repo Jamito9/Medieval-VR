@@ -1029,59 +1029,37 @@
               if (raw < 1) {
                 requestAnimationFrame(animate);
               } else {
-                // ── Definitive Quest 2 texture-swap fix ──────────────────────────
-                // The backPage a-plane sits at z=-0.004 behind the folio and has
-                // been showing the correct new texture throughout the animation —
-                // confirmed working on Quest 2.  That texture is already on the GPU.
+                // ── mesh.visible swap — definitive Quest 2 fix ───────────────────
+                // The folio mesh was hidden via mesh.visible=false in startCurl.
+                // A-Frame's entity is still fully active — no material properties
+                // were changed.  setAttribute('src') will be processed normally
+                // (not deferred) because the entity is not "hidden" from A-Frame's
+                // perspective.  material.update() cannot interfere because we never
+                // set opacity or transparent — those properties are untouched.
                 //
-                // Rather than asking Quest 2 to load a new texture into the folio
-                // (which fails when the entity is hidden/transparent), we:
-                //   1. Grab the confirmed texture directly from backPage's material.
-                //   2. Reveal the folio (opacity=1 via setAttribute — synchronous).
-                //   3. Immediately (same JS turn) copy the GPU-resident texture
-                //      onto the folio material — no new load, no async gap.
-                //   4. Call setAttribute('src') while the entity is NOW VISIBLE
-                //      so Quest 2 won't defer it, syncing A-Frame's internal state.
-                //   5. resetCurl hides curlMesh.
+                // rAF 1: swap page index and load new texture via A-Frame's pipeline
+                //         (identical to SWAP PAGE button path).
+                // rAF 2: texture is bound — make mesh visible.  curlMesh is still
+                //         covering the scene so no flash is possible.
+                //         resetCurl hides curlMesh, revealing the updated folio.
                 requestAnimationFrame(() => {
                   if (this._animAborted) return;
-
-                  // Step 1: grab confirmed texture from backPage (already on GPU).
-                  const bpMesh = this.backPage.getObject3D('mesh');
-                  const confirmedTex = bpMesh &&
-                                       bpMesh.material &&
-                                       bpMesh.material.map || null;
-
-                  // Step 2: update page index and text panels.
+                  // Update page index and all text panels.
                   if (scene.doSwap) scene.doSwap(dir, true);
-
-                  // Step 3: reveal folio — synchronous, update() runs and completes.
-                  folio.setAttribute('material', 'opacity', 1);
-
-                  // Step 4: overwrite material.map with the GPU-resident texture
-                  // in the same JS turn as the reveal.
-                  if (confirmedTex) {
+                  // Load new texture via A-Frame's own pipeline — same as SWAP PAGE.
+                  // Entity is active so Quest 2 processes this immediately.
+                  folio.setAttribute('src', capturedDestSrc);
+                  // One more frame for A-Frame's material pipeline to bind the texture.
+                  requestAnimationFrame(() => {
+                    if (this._animAborted) return;
+                    // Reveal the folio mesh — texture is now bound.
                     const fMesh = folio.getObject3D('mesh');
-                    if (fMesh && fMesh.material) {
-                      fMesh.material.map = confirmedTex;
-                      fMesh.material.needsUpdate = true;
-                      fMesh.layers.set(2);
+                    if (fMesh) {
+                      fMesh.visible = true;
+                      fMesh.layers.set(2);  // re-assert layer as safety net
                     }
-                  }
-
-                  // NOTE: folio.setAttribute('src') is intentionally omitted here.
-                  // Hypothesis 1 test: setAttribute('src') triggers A-Frame's
-                  // material.update() which synchronously nulls material.map while
-                  // starting an async load — overwriting the confirmed texture we
-                  // just copied from backPage.  Removing it tests whether that call
-                  // was destroying the fix.  A-Frame's internal data.src stays
-                  // stale but scene.currentAudioPage is correct via doSwap, so
-                  // the curl logic and all panels update correctly.
-                  // doSwap(dir, true) updates Latin, English, info-right, hover-text
-                  // and info-text panels — all supporting content changes correctly.
-
-                  // Step 5: hide curlMesh and clean up.
-                  if (this.isCurling) this.resetCurl();
+                    if (this.isCurling) this.resetCurl();
+                  });
                 });
               }
             };
@@ -1112,11 +1090,11 @@
               } else {
                 setTimeout(() => {
                   if (!this._animAborted) {
-                    // Restore original texture via setAttribute (A-Frame pipeline).
-                    // data.opacity is still 0 so the folio stays hidden during restore.
+                    // Restore original texture via setAttribute — entity is active.
                     if (this._savedSrc) folio.setAttribute('src', this._savedSrc);
-                    // Reveal via setAttribute so data.opacity is set back to 1.
-                    folio.setAttribute('material', 'opacity', 1);
+                    // Reveal mesh directly — no material properties were changed.
+                    const fMesh = folio.getObject3D('mesh');
+                    if (fMesh) { fMesh.visible = true; fMesh.layers.set(2); }
                     this.resetCurl();
                   }
                 }, 50);
@@ -1154,13 +1132,15 @@
               this.backCurlMat.roughness = folioMesh.material.roughness;
             }
 
-            // Hide folio via A-Frame's setAttribute so the value is stored in
-            // this.data.opacity = 0.  This means any later setAttribute('src', ...)
-            // call that triggers material.update() will read this.data.opacity = 0
-            // and keep the folio hidden — it will NOT reset to the schema default
-            // of 1.  This is the fix for the Quest 2 texture-swap bug where direct
-            // Three.js material.opacity writes were overwritten by A-Frame's update().
-            folio.setAttribute('material', 'opacity', 0);
+            // Hide the folio mesh directly — bypasses A-Frame's material system
+            // entirely.  mesh.visible = false is invisible to Three.js but the
+            // A-Frame entity remains "active" from the component perspective.
+            // This means folio.setAttribute('src', ...) called at curl completion
+            // will NOT be deferred by Quest 2 (the entity is not "hidden"), and
+            // A-Frame's material.update() will never overwrite our texture because
+            // we never touch opacity, transparent, or any material property here.
+            const folioMeshHide = folio.getObject3D('mesh');
+            if (folioMeshHide) folioMeshHide.visible = false;
 
             // backPage provides the visual destination texture backdrop during
             // the animation AND is a secondary source for applyDestTex (Tier 2).
@@ -1375,10 +1355,11 @@
           this._watchdog    = null;
           this._animAborted = true;
 
-          // Ensure folio is visible — belt-and-suspenders for the watchdog timeout
-          // path where neither _completeCurl nor _snapBack set opacity=1.
-          // Use setAttribute so data.opacity is also restored to 1.
-          this.el.setAttribute('material', 'opacity', 1);
+          // Safety net: ensure folio mesh is always visible after any exit path
+          // (watchdog timeout, abort, normal completion).  mesh.visible is the
+          // only visibility mechanism used — no material opacity changes.
+          const fMesh = this.el.getObject3D('mesh');
+          if (fMesh) { fMesh.visible = true; fMesh.layers.set(2); }
 
           this.curlMesh.visible     = false;
           this.backCurlMesh.visible = false;
