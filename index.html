@@ -1029,22 +1029,31 @@
               if (raw < 1) {
                 requestAnimationFrame(animate);
               } else {
-                // ── Call doSwap synchronously — exactly as SWAP PAGE button does ────
-                // The SWAP PAGE button calls doSwap(1, false) synchronously from a
-                // click handler (JS event loop, between XR frames).  The curl path
-                // was wrapping doSwap in an rAF, placing it one frame deeper inside
-                // the XR compositor pipeline.  A-Frame's texture loading behaves
-                // differently inside XR frame callbacks vs the JS event loop.
+                // ── Push setAttribute into the JS event loop via setTimeout(0) ────
+                // The SWAP PAGE button fires doSwap from a DOM click handler — in
+                // the JS event loop, between XR frames.  Every rAF-based approach
+                // has failed because rAF fires INSIDE the XR compositor frame loop,
+                // which is a different execution context on Quest 2.
                 //
-                // We are already inside an rAF (the animate callback itself).
-                // Call doSwap synchronously here — no additional wrapper.
-                // curlMesh remains visible and covers the folio during one settling
-                // frame, then resetCurl hides it to reveal the updated folio.
-                if (scene.doSwap) scene.doSwap(dir, false);
-                requestAnimationFrame(() => {
+                // doSwap(dir, false) with audio inside an XR rAF caused a crash.
+                // doSwap(dir, true) + separate setAttribute inside rAF still failed.
+                //
+                // setTimeout(0) ALWAYS fires in the JS event loop — never inside an
+                // XR frame.  This is the same context as a button click handler.
+                // folio.setAttribute('src') called here is identical to the SWAP
+                // PAGE button path that works reliably on Quest 2.
+                setTimeout(() => {
                   if (this._animAborted) return;
-                  if (this.isCurling) this.resetCurl();
-                });
+                  // Update panels and page index silently (no audio, no setAttribute).
+                  if (scene.doSwap) scene.doSwap(dir, true);
+                  // setAttribute in the JS event loop — same context as SWAP PAGE.
+                  folio.setAttribute('src', capturedDestSrc);
+                  // One rAF to let A-Frame bind the texture, then reveal.
+                  requestAnimationFrame(() => {
+                    if (this._animAborted) return;
+                    if (this.isCurling) this.resetCurl();
+                  });
+                }, 0);
               }
             };
             requestAnimationFrame(animate);
