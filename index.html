@@ -2223,6 +2223,10 @@
             if (soundEl.components.sound) soundEl.components.sound.playSound();
             soundUiEl.setAttribute('visible', 'false');
 
+            // Only run the lift sequence if VR is active.
+            // On desktop the folio is already at interaction position (no lectern).
+            if (!this.el.is('vr-mode')) return;
+
             // ── Lectern lift sequence ─────────────────────────────────────────
             // Three simultaneous animations on the folio transform, then a
             // staggered reveal of the UI panels once the folio has settled.
@@ -2280,16 +2284,24 @@
             }, 1300);
           };
 
-          // Desktop trigger — fires once on any click, then removes itself.
-          window.addEventListener('click', startAudio, { once: true });
+          // Desktop trigger — fires on any click, but only when NOT in VR.
+          // On Quest 2, tapping "Enter VR" in the browser fires a window click
+          // event BEFORE enter-vr fires.  Without this guard, startAudio() would
+          // run before VR begins: audioStarted=true, lift animation fires early,
+          // and enter-vr's early return means the A/X listeners are never attached
+          // and the text is never updated to "PRESS A OR X TO START".
+          window.addEventListener('click', () => {
+            if (!this.el.is('vr-mode')) startAudio();
+          }, { once: true });
 
-          // VR trigger — update prompt text on enter, wire A/X one-shot listeners.
-          // Fix 5: skip listener attachment if audio already started on desktop.
-          // Without this, the user's first intentional grab (which presses A/X as
-          // part of the combo) also fired startAudio, dismissing the prompt
-          // unexpectedly mid-session.
+          // VR trigger — update prompt and wire A/X one-shot listeners.
           this.el.addEventListener('enter-vr', () => {
-            if (audioStarted) return;
+            // If startAudio already ran (e.g. from a desktop click before entering
+            // VR), just hide the prompt — no need to update text or re-attach.
+            if (audioStarted) {
+              soundUiEl.setAttribute('visible', 'false');
+              return;
+            }
             soundUiEl.setAttribute('value', 'PRESS A OR X TO START');
             const rightCtrl = document.querySelector('#right-hand');
             const leftCtrl  = document.querySelector('#left-hand');
@@ -2410,8 +2422,6 @@
                 position=" 3.5 2.5 -2.0"></a-entity>
       <a-entity id="ambient-sound" sound="src: #music-track; loop: true; volume: 0.5;"></a-entity>
       <a-entity id="click-sound"   sound="src: #click-track; volume: 1.0; poolSize: 5;"></a-entity>
-      <a-text id="sound-ui" value="CLICK TO START" position="0 2.2 -2" align="center" color="#FFD700" width="3"></a-text>
-
       <a-entity id="rig" vr-locomotion>
         <a-entity camera look-controls wasd-controls position="0 1.6 0">
           <a-cursor id="cursor" position="0 0 -0.4" scale="0.4 0.4 0.4"
@@ -2419,6 +2429,13 @@
                     animation__fusing="property: scale; from: 0.4 0.4 0.4; to: 0.04 0.04 0.04; dur: 1500; startEvents: fusing;"
                     animation__reset="property: scale; to: 0.4 0.4 0.4; dur: 500; startEvents: mouseleave;">
           </a-cursor>
+          <!-- sound-ui: inside camera so it always appears centred in view
+               regardless of where the user's head is in world space.
+               z=-1.2 keeps it at a comfortable reading distance. -->
+          <a-text id="sound-ui" value="CLICK TO START"
+                  position="0 0.1 -1.2" align="center"
+                  color="#FFD700" width="2">
+          </a-text>
         </a-entity>
         <a-entity id="left-hand"
                   hand-controls="hand: left; handModelStyle: lowPoly; color: #c8956c"
