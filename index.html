@@ -1029,23 +1029,21 @@
               if (raw < 1) {
                 requestAnimationFrame(animate);
               } else {
-                // ── Use exactly the same path as the SWAP PAGE button ─────────────
-                // The button calls doSwap(1, false) which internally calls
-                // folio.setAttribute('src', page.src) on a fully visible, opaque folio.
-                // That works reliably on Quest 2.  Do exactly the same thing here.
+                // ── Call doSwap synchronously — exactly as SWAP PAGE button does ────
+                // The SWAP PAGE button calls doSwap(1, false) synchronously from a
+                // click handler (JS event loop, between XR frames).  The curl path
+                // was wrapping doSwap in an rAF, placing it one frame deeper inside
+                // the XR compositor pipeline.  A-Frame's texture loading behaves
+                // differently inside XR frame callbacks vs the JS event loop.
                 //
-                // The curlMesh is still visible and covers the folio during the
-                // one-rAF gap — no flash is possible.  resetCurl then hides curlMesh.
+                // We are already inside an rAF (the animate callback itself).
+                // Call doSwap synchronously here — no additional wrapper.
+                // curlMesh remains visible and covers the folio during one settling
+                // frame, then resetCurl hides it to reveal the updated folio.
+                if (scene.doSwap) scene.doSwap(dir, false);
                 requestAnimationFrame(() => {
                   if (this._animAborted) return;
-                  // doSwap(dir, false): updates page index, calls folio.setAttribute('src')
-                  // and updates all panels — identical to the SWAP PAGE button click.
-                  if (scene.doSwap) scene.doSwap(dir, false);
-                  // One frame for A-Frame's texture pipeline to bind the new texture.
-                  requestAnimationFrame(() => {
-                    if (this._animAborted) return;
-                    if (this.isCurling) this.resetCurl();
-                  });
+                  if (this.isCurling) this.resetCurl();
                 });
               }
             };
