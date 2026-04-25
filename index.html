@@ -1032,10 +1032,7 @@
                 setTimeout(() => {
                   if (this._animAborted) return;
 
-                  // Step 1: Restore folio mesh visibility BEFORE setAttribute.
-                  // When mesh.visible=false, Quest 2 may defer texture loading.
-                  // Restoring it here means setAttribute fires on a fully visible
-                  // entity — identical conditions to the SWAP PAGE button click.
+                  // Step 1: Restore folio mesh visibility.
                   // curlMesh is still visible and covers the folio, so no flash.
                   const fMesh = folio.getObject3D('mesh');
                   if (fMesh) { fMesh.visible = true; fMesh.layers.set(2); }
@@ -1043,27 +1040,26 @@
                   // Step 2: Update panels silently.
                   if (scene.doSwap) scene.doSwap(dir, true);
 
-                  // Step 3: Load texture via A-Frame's pipeline.
-                  // Folio is now visible — Quest 2 will not defer this load.
+                  // Step 3A: Apply the pre-cached texture DIRECTLY to the Three.js
+                  // material. This is synchronous and the GPU upload already happened
+                  // at scene load via initTexture() — the Quest 2 XR compositor sees
+                  // the new texture immediately without going through A-Frame's async
+                  // material pipeline (which does not reliably fire
+                  // material-textureloaded in a WebXR session on Quest 2).
+                  applyDestTex(capturedDestSrc);
+
+                  // Step 3B: Keep A-Frame's internal src state in sync so future
+                  // getAttribute('src') calls return the correct value. The visual
+                  // result does NOT depend on this — applyDestTex already wrote the
+                  // texture to the Three.js material above.
                   folio.setAttribute('src', capturedDestSrc);
 
-                  // Step 4: Wait for texture to bind before revealing the folio.
-                  // material-textureloaded fires when A-Frame has applied the new
-                  // texture to the material — AFTER this, hiding curlMesh reveals
-                  // the folio with the correct texture.
-                  // 800ms fallback handles any edge case where the event misfires.
-                  const revealFolio = () => {
-                    folio.removeEventListener('material-textureloaded', revealFolio);
-                    clearTimeout(fallbackTimer);
-                    requestAnimationFrame(() => {
-                      if (this.isCurling) this.resetCurl();
-                    });
-                  };
-                  folio.addEventListener('material-textureloaded', revealFolio);
-                  const fallbackTimer = setTimeout(() => {
-                    folio.removeEventListener('material-textureloaded', revealFolio);
+                  // Step 4: Reveal the folio on the next frame. The texture is
+                  // already set synchronously above — no need to wait for
+                  // material-textureloaded, which is unreliable on Quest 2 WebXR.
+                  requestAnimationFrame(() => {
                     if (this.isCurling) this.resetCurl();
-                  }, 800);
+                  });
                 }, 0);
               }
             };
