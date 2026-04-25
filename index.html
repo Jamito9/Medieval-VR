@@ -1029,30 +1029,41 @@
               if (raw < 1) {
                 requestAnimationFrame(animate);
               } else {
-                // ── Push setAttribute into the JS event loop via setTimeout(0) ────
-                // The SWAP PAGE button fires doSwap from a DOM click handler — in
-                // the JS event loop, between XR frames.  Every rAF-based approach
-                // has failed because rAF fires INSIDE the XR compositor frame loop,
-                // which is a different execution context on Quest 2.
-                //
-                // doSwap(dir, false) with audio inside an XR rAF caused a crash.
-                // doSwap(dir, true) + separate setAttribute inside rAF still failed.
-                //
-                // setTimeout(0) ALWAYS fires in the JS event loop — never inside an
-                // XR frame.  This is the same context as a button click handler.
-                // folio.setAttribute('src') called here is identical to the SWAP
-                // PAGE button path that works reliably on Quest 2.
                 setTimeout(() => {
                   if (this._animAborted) return;
-                  // Update panels and page index silently (no audio, no setAttribute).
+
+                  // Step 1: Restore folio mesh visibility BEFORE setAttribute.
+                  // When mesh.visible=false, Quest 2 may defer texture loading.
+                  // Restoring it here means setAttribute fires on a fully visible
+                  // entity — identical conditions to the SWAP PAGE button click.
+                  // curlMesh is still visible and covers the folio, so no flash.
+                  const fMesh = folio.getObject3D('mesh');
+                  if (fMesh) { fMesh.visible = true; fMesh.layers.set(2); }
+
+                  // Step 2: Update panels silently.
                   if (scene.doSwap) scene.doSwap(dir, true);
-                  // setAttribute in the JS event loop — same context as SWAP PAGE.
+
+                  // Step 3: Load texture via A-Frame's pipeline.
+                  // Folio is now visible — Quest 2 will not defer this load.
                   folio.setAttribute('src', capturedDestSrc);
-                  // One rAF to let A-Frame bind the texture, then reveal.
-                  requestAnimationFrame(() => {
-                    if (this._animAborted) return;
+
+                  // Step 4: Wait for texture to bind before revealing the folio.
+                  // material-textureloaded fires when A-Frame has applied the new
+                  // texture to the material — AFTER this, hiding curlMesh reveals
+                  // the folio with the correct texture.
+                  // 800ms fallback handles any edge case where the event misfires.
+                  const revealFolio = () => {
+                    folio.removeEventListener('material-textureloaded', revealFolio);
+                    clearTimeout(fallbackTimer);
+                    requestAnimationFrame(() => {
+                      if (this.isCurling) this.resetCurl();
+                    });
+                  };
+                  folio.addEventListener('material-textureloaded', revealFolio);
+                  const fallbackTimer = setTimeout(() => {
+                    folio.removeEventListener('material-textureloaded', revealFolio);
                     if (this.isCurling) this.resetCurl();
-                  });
+                  }, 800);
                 }, 0);
               }
             };
@@ -1083,7 +1094,8 @@
               } else {
                 setTimeout(() => {
                   if (!this._animAborted) {
-                    // Restore original texture via setAttribute — same path as button.
+                    const fMesh = folio.getObject3D('mesh');
+                    if (fMesh) { fMesh.visible = true; fMesh.layers.set(2); }
                     if (this._savedSrc) folio.setAttribute('src', this._savedSrc);
                     this.resetCurl();
                   }
@@ -1122,9 +1134,12 @@
               this.backCurlMat.roughness = folioMesh.material.roughness;
             }
 
-            // The folio stays fully visible and opaque throughout the animation.
-            // The curlMesh sits at z=0.001, one millimetre in front, and covers
-            // it completely.  No visibility or material changes are made here.
+            // Hide the folio mesh directly — Three.js visibility flag, completely
+            // invisible to A-Frame's material component.  The backPage (z=-0.004)
+            // is now visible through the peeled area of the curlMesh.
+            // We restore mesh.visible BEFORE calling setAttribute in the completion
+            // path so A-Frame processes the texture load on a visible entity.
+            if (folioMesh) folioMesh.visible = false;
 
             // backPage provides the visual destination texture backdrop during
             // the animation AND is a secondary source for applyDestTex (Tier 2).
@@ -1338,6 +1353,11 @@
           clearTimeout(this._watchdog);
           this._watchdog    = null;
           this._animAborted = true;
+
+          // Ensure folio mesh is always visible — safety net for watchdog and
+          // exit-vr abort paths where completeCurl's revealFolio never ran.
+          const fMesh = this.el.getObject3D('mesh');
+          if (fMesh) { fMesh.visible = true; fMesh.layers.set(2); }
 
           this.curlMesh.visible     = false;
           this.backCurlMesh.visible = false;
