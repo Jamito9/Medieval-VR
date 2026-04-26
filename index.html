@@ -1040,19 +1040,23 @@
                   // Step 2: Update panels silently.
                   if (scene.doSwap) scene.doSwap(dir, true);
 
-                  // Step 3A: Apply the pre-cached texture DIRECTLY to the Three.js
+                  // Step 3: Apply the pre-cached texture DIRECTLY to the Three.js
                   // material. This is synchronous and the GPU upload already happened
                   // at scene load via initTexture() — the Quest 2 XR compositor sees
                   // the new texture immediately without going through A-Frame's async
-                  // material pipeline (which does not reliably fire
-                  // material-textureloaded in a WebXR session on Quest 2).
+                  // material pipeline.
+                  //
+                  // folio.setAttribute('src', ...) is deliberately NOT called here.
+                  // On Quest 2 WebXR, setAttribute triggers A-Frame's material
+                  // component update() which resets fMesh.material.map to its
+                  // internally-tracked state (the OLD texture, because applyDestTex
+                  // bypasses A-Frame's tracking) before the async load completes —
+                  // causing the folio to ping back to the previous page. Nothing in
+                  // the curl pipeline reads folio.getAttribute('src'), so omitting
+                  // this call is safe. _snapBack uses _savedSrc (captured at
+                  // startCurl from scene.pages) and doSwap uses scene.currentAudioPage
+                  // — neither depends on A-Frame's tracked attribute value.
                   applyDestTex(capturedDestSrc);
-
-                  // Step 3B: Keep A-Frame's internal src state in sync so future
-                  // getAttribute('src') calls return the correct value. The visual
-                  // result does NOT depend on this — applyDestTex already wrote the
-                  // texture to the Three.js material above.
-                  folio.setAttribute('src', capturedDestSrc);
 
                   // Step 4: Reveal the folio on the next frame. The texture is
                   // already set synchronously above — no need to wait for
