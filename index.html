@@ -862,7 +862,6 @@
           scene.addEventListener('loaded', () => {
             const pages = scene.pages;
             if (!pages) return;
-            const renderer = scene.renderer;
             pages.forEach(page => {
               const imgEl = document.querySelector(page.src);
               if (!imgEl) return;
@@ -870,9 +869,14 @@
               const tex = new THREE.Texture(imgEl);
               tex.colorSpace  = 'srgb';   // THREE.SRGBColorSpace in Three.js r152+
               tex.needsUpdate = true;
-              // Force immediate GPU upload — eliminates the XR compositor timing
-              // window that caused blank/unchanged textures on Quest 2 after curl.
-              if (renderer && renderer.initTexture) renderer.initTexture(tex);
+              // NOTE: renderer.initTexture() is deliberately NOT called here.
+              // Calling initTexture() during the scene 'loaded' event on Quest 2
+              // fires gl.texImage2D() before the XR compositor has rendered its
+              // first frame. On Quest 2's Adreno GPU this produces a
+              // CONTEXT_LOST_WEBGL error that crashes the XR session, causing the
+              // blue loading screen to hang and then terminate.
+              // Three.js uploads the texture lazily on first render — exactly
+              // when it is needed — which is safe and correct on all platforms.
               this._texCache[page.src] = tex;
             });
           });
