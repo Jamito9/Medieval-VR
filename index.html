@@ -1040,24 +1040,33 @@
                   // Step 2: Update panels silently.
                   if (scene.doSwap) scene.doSwap(dir, true);
 
-                  // Step 3A: Apply the pre-cached texture DIRECTLY to the Three.js
-                  // material. This is synchronous and the GPU upload already happened
-                  // at scene load via initTexture() — the Quest 2 XR compositor sees
-                  // the new texture immediately without going through A-Frame's async
-                  // material pipeline (which does not reliably fire
-                  // material-textureloaded in a WebXR session on Quest 2).
-                  applyDestTex(capturedDestSrc);
-
-                  // Step 3B: Keep A-Frame's internal src state in sync so future
-                  // getAttribute('src') calls return the correct value. The visual
-                  // result does NOT depend on this — applyDestTex already wrote the
-                  // texture to the Three.js material above.
+                  // Step 3: Sync A-Frame's internal material state first.
+                  // This keeps A-Frame's tracked src correct so that subsequent
+                  // calls — folio.setAttribute('material', {...}) from the mat
+                  // button, or folio.setAttribute('src', ...) from the SWAP PAGE
+                  // button — operate on the right baseline and do not revert the
+                  // folio to the previous texture.
+                  // A-Frame's material update() runs synchronously here and may
+                  // clear fMesh.material.map while it queues an async texture load.
                   folio.setAttribute('src', capturedDestSrc);
 
-                  // Step 4: Reveal the folio on the next frame. The texture is
-                  // already set synchronously above — no need to wait for
-                  // material-textureloaded, which is unreliable on Quest 2 WebXR.
+                  // Step 4: Immediately override any map-clearing A-Frame's
+                  // synchronous update() may have just performed by writing the
+                  // pre-cached, GPU-uploaded texture directly to the Three.js
+                  // material. This is synchronous — the Quest 2 XR compositor
+                  // sees the new texture on the next rendered frame.
+                  applyDestTex(capturedDestSrc);
+
+                  // Step 5: On the next frame, re-apply the cached texture one
+                  // more time before revealing the folio. Guards against any
+                  // deferred A-Frame attribute-flush or async load callback that
+                  // fires between the setTimeout and this RAF and overwrites the
+                  // map written in Step 4. Then call resetCurl to hide curlMesh
+                  // and reveal the correctly-textured folio.
+                  // material-textureloaded is NOT used: it does not fire reliably
+                  // in a Quest 2 WebXR session.
                   requestAnimationFrame(() => {
+                    applyDestTex(capturedDestSrc);
                     if (this.isCurling) this.resetCurl();
                   });
                 }, 0);
