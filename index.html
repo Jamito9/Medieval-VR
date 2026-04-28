@@ -1033,41 +1033,37 @@
               if (raw < 1) {
                 requestAnimationFrame(animate);
               } else {
-                setTimeout(() => {
-                  if (this._animAborted) return;
+                if (this._animAborted) return;
 
-                  // Step 1: Restore folio mesh visibility before resetCurl so
-                  // the mesh is visible when A-Frame processes the texture below.
-                  // resetCurl also sets fMesh.visible = true — this is belt-and-
-                  // suspenders for any edge case where the mesh ref differs.
-                  const fMesh = folio.getObject3D('mesh');
-                  if (fMesh) { fMesh.visible = true; fMesh.layers.set(2); }
+                // Step 1: Restore folio mesh visibility before resetCurl so
+                // the mesh is visible when A-Frame processes the texture below.
+                // resetCurl also sets fMesh.visible = true — belt-and-suspenders
+                // for any edge case where the mesh ref differs.
+                const fMesh = folio.getObject3D('mesh');
+                if (fMesh) { fMesh.visible = true; fMesh.layers.set(2); }
 
-                  // Step 2: Fully complete the curl — hides curlMesh, backCurlMesh,
-                  // shadowMesh, and backPage; sets isCurling = false; clears the
-                  // watchdog; arms the grab cooldown.  After this call the scene is
-                  // in exactly the same state as when the SWAP PAGE button is pressed:
-                  // no curl animation meshes are visible, fMesh is visible, and
-                  // A-Frame is not mid-animation.
-                  this.resetCurl();
+                // Step 2: Fully complete the curl — hides curlMesh, backCurlMesh,
+                // shadowMesh, and backPage; sets isCurling = false; clears the
+                // watchdog; arms the grab cooldown. After this call the scene is
+                // in exactly the same state as when the SWAP PAGE button is pressed.
+                this.resetCurl();
 
-                  // Step 3: Update page index and all metadata panels silently.
-                  // doSwap(dir, true) increments currentAudioPage and refreshes the
-                  // transcription, translation and info-right panels without playing
-                  // the click sound (pageturn already fired) and without calling
-                  // folio.setAttribute('src') — that is done explicitly below.
-                  if (scene.doSwap) scene.doSwap(dir, true);
+                // Step 3: Update page index and all metadata panels silently.
+                // doSwap(dir, true) increments currentAudioPage and refreshes the
+                // transcription, translation and info-right panels without playing
+                // the click sound (pageturn already fired) and without calling
+                // folio.setAttribute('src') — that is done explicitly below.
+                if (scene.doSwap) scene.doSwap(dir, true);
 
-                  // Step 4: Apply the new texture via A-Frame's standard pipeline.
-                  // This call is now made in clean scene state — no curl meshes
-                  // visible, isCurling = false, fMesh visible — which is identical
-                  // to the state the SWAP PAGE button operates in.  That path is
-                  // confirmed working on Quest 2 VR; replicating it here ensures
-                  // A-Frame's texture system processes the update without the
-                  // deferred-flush interference that occurs while curlMesh and
-                  // backPage are still active.
-                  folio.setAttribute('src', capturedDestSrc);
-                }, 0);
+                // Step 4: Apply the new texture via A-Frame's standard pipeline.
+                // Executed directly in the RAF else branch — NOT inside setTimeout.
+                // setTimeout(fn, 0) queued from within a WebXR rAF callback enters
+                // the browser macrotask queue, which Quest 2's XR compositor
+                // scheduler deprioritises indefinitely — the callback never fires,
+                // so doSwap and setAttribute were silently skipped every time.
+                // Executing inline here runs on the same XR frame that completed
+                // the animation, bypassing the scheduler entirely.
+                folio.setAttribute('src', capturedDestSrc);
               }
             };
             requestAnimationFrame(animate);
