@@ -1,4 +1,4 @@
-​<!DOCTYPE html>
+<!DOCTYPE html>
 <html>
   <head>
     <meta charset="utf-8">
@@ -1372,22 +1372,22 @@
         },
 
         tick: function (t, dt) {
-          if (!this.isVR) return;
-
           // ── Phase 0: Tick-driven animation (complete or snapback) ────────────────
-          // window.requestAnimationFrame is suppressed in Quest 2 WebXR: the Meta
-          // Browser hands the rendering thread to the XR compositor via
-          // XRSession.requestAnimationFrame / renderer.setAnimationLoop, causing
-          // the browser window to be treated as an occluded background tab.
-          // Chromium's background-tab throttling then runs window.rAF at ~0 Hz,
-          // so rAF-based animation loops never advance and the watchdog fires.
-          // Both _completeCurl and _snapBack now store their per-frame logic as
-          // a closure on this._animTick, driven here inside A-Frame's tick()
-          // which executes in the XR compositor's own 72 Hz frame loop.
+          // This runs BEFORE the isVR guard so that curl and snap-back animations
+          // execute on both desktop and VR. On desktop, window.requestAnimationFrame
+          // works normally; in a Quest 2 WebXR session it is suppressed by
+          // Chromium's background-tab throttling (the XR compositor owns the
+          // rendering thread via renderer.setAnimationLoop / XRSession.rAF).
+          // Both _completeCurl and _snapBack store their per-frame logic as a
+          // closure on this._animTick, driven here inside A-Frame's tick() which
+          // executes in the XR compositor's own 72 Hz loop on Quest 2 and in the
+          // normal browser rAF loop on desktop.
           if (this._animTick) {
             this._animTick(performance.now());
             return;
           }
+
+          if (!this.isVR) return;
 
           // ── Grab cooldown ─────────────────────────────────────────────────────────
           // Prevents the proximity detector from immediately re-triggering a new curl
@@ -2246,65 +2246,61 @@
             if (soundEl.components.sound) soundEl.components.sound.playSound();
             soundUiEl.setAttribute('visible', 'false');
 
-            // Only run the lift sequence if VR is active.
-            // On desktop the folio is already at interaction position (no lectern).
-            if (!this.el.is('vr-mode')) return;
+            if (this.el.is('vr-mode')) {
+              // ── Lectern lift sequence (VR only) ──────────────────────────────
+              // Three simultaneous animations on the folio transform, then a
+              // staggered reveal of the UI panels once the folio has settled.
+              //
+              // 1. zoom-anchor rises from resting (y=1.35, z=−2.2) to interaction
+              //    position (y=1.55, z=−2.0), floating slightly forward off the lectern.
+              //    Uses animation__lift (named) so the zoom button's animation__zoom
+              //    tween on the same entity never cancels this one.
+              // 2. folio-object rotation straightens from −20° resting lean to 0°.
+              // 3. folio-object scale grows from 0.7 to 1.0.
 
-            // ── Lectern lift sequence ─────────────────────────────────────────
-            // Three simultaneous animations on the folio transform, then a
-            // staggered reveal of the UI panels once the folio has settled.
-            //
-            // 1. zoom-anchor rises from resting (y=1.35, z=−2.2) to interaction
-            //    position (y=1.55, z=−2.0), floating slightly forward off the lectern.
-            //    Uses animation__lift (named) so the zoom button's animation__zoom
-            //    tween on the same entity never cancels this one.
-            // 2. folio-object rotation straightens from −20° resting lean to 0°.
-            // 3. folio-object scale grows from 0.7 to 1.0.
-            //
-            // After 1000 ms: text panels revealed.
-            // After 1300 ms: button-group and info-panel revealed.
+              const LIFT_DUR  = 1200;
+              const SCALE_DUR = 1000;
+              const TILT_DUR  = 1000;
+              const EASE      = 'easeInOutQuad';
 
-            const LIFT_DUR  = 1200;  // ms — anchor position tween
-            const SCALE_DUR = 1000;  // ms — folio scale tween
-            const TILT_DUR  = 1000;  // ms — folio rotation tween
-            const EASE      = 'easeInOutQuad';
+              zoomAnchor.setAttribute('animation__lift', {
+                property: 'position',
+                from: '0 1.35 -2.2',
+                to:   '0 1.55 -2.0',
+                dur: LIFT_DUR, easing: EASE
+              });
 
-            // Animate zoom-anchor to interaction position (named to avoid zoom conflict)
-            zoomAnchor.setAttribute('animation__lift', {
-              property: 'position',
-              from: '0 1.35 -2.2',
-              to:   '0 1.55 -2.0',
-              dur: LIFT_DUR, easing: EASE
-            });
+              folio.setAttribute('animation__tilt', {
+                property: 'rotation',
+                from: '-20 0 0',
+                to:   '0 0 0',
+                dur: TILT_DUR, easing: EASE
+              });
 
-            // Straighten folio from resting lean
-            folio.setAttribute('animation__tilt', {
-              property: 'rotation',
-              from: '-20 0 0',
-              to:   '0 0 0',
-              dur: TILT_DUR, easing: EASE
-            });
+              folio.setAttribute('animation__scale', {
+                property: 'scale',
+                from: '0.7 0.7 0.7',
+                to:   '1 1 1',
+                dur: SCALE_DUR, easing: EASE
+              });
+            }
 
-            // Grow folio to full interaction scale
-            folio.setAttribute('animation__scale', {
-              property: 'scale',
-              from: '0.7 0.7 0.7',
-              to:   '1 1 1',
-              dur: SCALE_DUR, easing: EASE
-            });
+            // Reveal panels and buttons on both desktop and VR.
+            // In VR: staggered delays let the folio finish rising first.
+            // On desktop: folio is already in position so delay is 0.
+            const panelDelay  = this.el.is('vr-mode') ? 1000 : 0;
+            const buttonDelay = this.el.is('vr-mode') ? 1300 : 0;
 
-            // Reveal text panels while the folio is still rising
             setTimeout(() => {
               document.querySelector('#translation-panel').setAttribute('visible', true);
               document.querySelector('#transcription-panel').setAttribute('visible', true);
               document.querySelector('#info-right-panel').setAttribute('visible', true);
-            }, 1000);
+            }, panelDelay);
 
-            // Reveal folio controls once the lift has settled
             setTimeout(() => {
               document.querySelector('#button-group').setAttribute('visible', true);
               infoPanel.setAttribute('visible', true);
-            }, 1300);
+            }, buttonDelay);
           };
 
           // Desktop trigger — fires on any click, but only when NOT in VR.
@@ -2697,6 +2693,7 @@
           </a-text>
 
       </a-entity>
+
     </a-scene>
 
 </html>
