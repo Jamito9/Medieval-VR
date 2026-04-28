@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+​<!DOCTYPE html>
 <html>
   <head>
     <meta charset="utf-8">
@@ -703,6 +703,7 @@
           this._ctrlPos         = new THREE.Vector3();
           this.R                = 0.04;
           this._animAborted       = false;
+          this._animTick          = null;         // tick-driven animation step — replaces window.rAF loops
           this._watchdog          = null;
           this._mouseX            = 0;
           this._savedTexMap       = null;
@@ -1007,73 +1008,65 @@
 
           this._completeCurl = () => {
             playPageTurn();
-            const capturedCtrl   = this.activeController;
+            const capturedCtrl = this.activeController;
             this.activeController = null;
             // High-intensity commit pulse synchronised with the page-turn audio — both
             // land on the same frame so the tactile and auditory cues reinforce each other.
             pulseHaptic(capturedCtrl, 0.8, 60);
-            const startProg      = this.peelProgress;
-            const capturedSide   = this.curlSide;
-            const startTime      = performance.now();
-            const duration       = 450;
+            const startProg    = this.peelProgress;
+            const capturedSide = this.curlSide;
+            const startTime    = performance.now();
+            const duration     = 450;
 
-            // Capture destination src NOW (before any async state changes)
-            const pages      = scene.pages;
-            const currentIdx = (scene.currentAudioPage || 1) - 1;
-            const dir        = capturedSide === 'right' ? 1 : -1;
-            const nextIdx    = (currentIdx + dir + pages.length) % pages.length;
+            // Capture destination src NOW (before any async state changes).
+            const pages           = scene.pages;
+            const currentIdx      = (scene.currentAudioPage || 1) - 1;
+            const dir             = capturedSide === 'right' ? 1 : -1;
+            const nextIdx         = (currentIdx + dir + pages.length) % pages.length;
             const capturedDestSrc = pages[nextIdx].src;
 
-            const animate = (now) => {
-              if (this._animAborted) return;
+            // Store the animation step as a closure on this._animTick.
+            // tick() calls this every XR frame (inside renderer.setAnimationLoop).
+            //
+            // window.requestAnimationFrame is suppressed in a Quest 2 WebXR
+            // session: the Meta Browser hands the rendering thread to the XR
+            // compositor via XRSession.requestAnimationFrame / setAnimationLoop,
+            // causing the browser window to be treated as an occluded background
+            // tab. Chromium's background-tab throttling then suppresses
+            // window.requestAnimationFrame to ~0 Hz, so the animation loop never
+            // advances, the watchdog fires, and the folio snaps back. By driving
+            // the animation through tick() we execute in the XR compositor's own
+            // frame loop, which is guaranteed to run at 72 Hz on Quest 2.
+            this._animTick = (now) => {
+              if (this._animAborted) { this._animTick = null; return; }
               const raw   = Math.min((now - startTime) / duration, 1);
               const eased = easeInOut(raw);
               this.peelProgress = startProg + (1 - startProg) * eased;
               this.updateCurl(this.peelProgress, capturedSide);
-              if (raw < 1) {
-                requestAnimationFrame(animate);
-              } else {
-                if (this._animAborted) return;
-
-                // Step 1: Restore folio mesh visibility before resetCurl so
-                // the mesh is visible when A-Frame processes the texture below.
-                // resetCurl also sets fMesh.visible = true — belt-and-suspenders
-                // for any edge case where the mesh ref differs.
+              if (raw >= 1) {
+                this._animTick = null;
+                // Restore folio mesh visibility before resetCurl.
                 const fMesh = folio.getObject3D('mesh');
                 if (fMesh) { fMesh.visible = true; fMesh.layers.set(2); }
-
-                // Step 2: Fully complete the curl — hides curlMesh, backCurlMesh,
-                // shadowMesh, and backPage; sets isCurling = false; clears the
-                // watchdog; arms the grab cooldown. After this call the scene is
-                // in exactly the same state as when the SWAP PAGE button is pressed.
+                // resetCurl: hides curl meshes, isCurling=false, clears watchdog,
+                // arms grab cooldown. Scene is now in the same state as SWAP PAGE.
                 this.resetCurl();
-
-                // Step 3: Update page index and all metadata panels silently.
-                // doSwap(dir, true) increments currentAudioPage and refreshes the
-                // transcription, translation and info-right panels without playing
-                // the click sound (pageturn already fired) and without calling
-                // folio.setAttribute('src') — that is done explicitly below.
+                // Update page index and all panels silently (pageturn sound already fired).
                 if (scene.doSwap) scene.doSwap(dir, true);
-
-                // Step 4: Apply the new texture via A-Frame's standard pipeline.
-                // Executed directly in the RAF else branch — NOT inside setTimeout.
-                // setTimeout(fn, 0) queued from within a WebXR rAF callback enters
-                // the browser macrotask queue, which Quest 2's XR compositor
-                // scheduler deprioritises indefinitely — the callback never fires,
-                // so doSwap and setAttribute were silently skipped every time.
-                // Executing inline here runs on the same XR frame that completed
-                // the animation, bypassing the scheduler entirely.
+                // Apply the new texture via A-Frame's standard pipeline.
+                // isCurling=false, curlMesh hidden, fMesh visible — clean state,
+                // identical to the confirmed-working SWAP PAGE button path.
                 folio.setAttribute('src', capturedDestSrc);
               }
             };
-            requestAnimationFrame(animate);
           };
 
           this._snapBack = () => {
-            const capturedCtrl   = this.activeController;
+            const capturedCtrl = this.activeController;
             this.activeController = null;
-            // Flutter cascade: four rapid, diminishing pulses simulate the spring-back
-            // of paper tension releasing — felt as a high-frequency "flutter" effect.
+            // Flutter haptic cascade — haptic-only, not animation-critical.
+            // These setTimeout calls may fire late on Quest 2 (macrotask throttling
+            // in WebXR) but the snap-back animation itself runs through tick().
             pulseHaptic(capturedCtrl, 0.25, 15);
             setTimeout(() => pulseHaptic(capturedCtrl, 0.20, 12),  45);
             setTimeout(() => pulseHaptic(capturedCtrl, 0.15, 10),  90);
@@ -1082,26 +1075,21 @@
             const capturedSide = this.curlSide;
             const startTime    = performance.now();
             const duration     = 350;
-            const animate = (now) => {
-              if (this._animAborted) return;
+            // Tick-driven animation — see _completeCurl comment for rationale.
+            this._animTick = (now) => {
+              if (this._animAborted) { this._animTick = null; return; }
               const raw   = Math.min((now - startTime) / duration, 1);
               const eased = easeOut(raw);
               this.peelProgress = startProg * (1 - eased);
               this.updateCurl(this.peelProgress, capturedSide);
-              if (raw < 1) {
-                requestAnimationFrame(animate);
-              } else {
-                setTimeout(() => {
-                  if (!this._animAborted) {
-                    const fMesh = folio.getObject3D('mesh');
-                    if (fMesh) { fMesh.visible = true; fMesh.layers.set(2); }
-                    if (this._savedSrc) folio.setAttribute('src', this._savedSrc);
-                    this.resetCurl();
-                  }
-                }, 50);
+              if (raw >= 1) {
+                this._animTick = null;
+                const fMesh = folio.getObject3D('mesh');
+                if (fMesh) { fMesh.visible = true; fMesh.layers.set(2); }
+                if (this._savedSrc) folio.setAttribute('src', this._savedSrc);
+                this.resetCurl();
               }
             };
-            requestAnimationFrame(animate);
           };
 
           const startCurl = (side, controllerEl) => {
@@ -1352,6 +1340,7 @@
           clearTimeout(this._watchdog);
           this._watchdog    = null;
           this._animAborted = true;
+          this._animTick    = null;  // abort any tick-driven animation in progress
 
           // Ensure folio mesh is always visible — safety net for watchdog and
           // exit-vr abort paths where completeCurl's revealFolio never ran.
@@ -1384,6 +1373,21 @@
 
         tick: function (t, dt) {
           if (!this.isVR) return;
+
+          // ── Phase 0: Tick-driven animation (complete or snapback) ────────────────
+          // window.requestAnimationFrame is suppressed in Quest 2 WebXR: the Meta
+          // Browser hands the rendering thread to the XR compositor via
+          // XRSession.requestAnimationFrame / renderer.setAnimationLoop, causing
+          // the browser window to be treated as an occluded background tab.
+          // Chromium's background-tab throttling then runs window.rAF at ~0 Hz,
+          // so rAF-based animation loops never advance and the watchdog fires.
+          // Both _completeCurl and _snapBack now store their per-frame logic as
+          // a closure on this._animTick, driven here inside A-Frame's tick()
+          // which executes in the XR compositor's own 72 Hz frame loop.
+          if (this._animTick) {
+            this._animTick(performance.now());
+            return;
+          }
 
           // ── Grab cooldown ─────────────────────────────────────────────────────────
           // Prevents the proximity detector from immediately re-triggering a new curl
@@ -2693,7 +2697,6 @@
           </a-text>
 
       </a-entity>
-
     </a-scene>
 
 </html>
