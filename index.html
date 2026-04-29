@@ -842,6 +842,17 @@
             this.isVR = true;
             this.rightCorner.classList.remove('clickable');
             this.leftCorner.classList.remove('clickable');
+            // Reset _rcEnabled so the _setRC idempotency guard does not
+            // skip the raycaster.layers.enable(2) call on first VR entry.
+            // THREE.Raycaster initialises with mask=1 (layer 0 only —
+            // layer 2 disabled), but _rcEnabled starts as {left:true,
+            // right:true}. Without this reset, _setRC(ctrl, true) would
+            // see the flag already true and return early, leaving the
+            // folio invisible to both controller raycasters until the
+            // first HOVER_REACH entry/exit cycle.
+            this._rcEnabled = { left: false, right: false };
+            if (this._rightCtrl) this._setRC(this._rightCtrl, true);
+            if (this._leftCtrl)  this._setRC(this._leftCtrl,  true);
           });
           scene.addEventListener('exit-vr', () => {
             this.isVR = false;
@@ -955,11 +966,7 @@
           //   2. backPage mesh map: A-Frame may have loaded it during the animation.
           //   3. Build directly from the preloaded <img> element as a last resort.
           //
-          // After resolving the texture, renderer.initTexture() is called to force
-          // an immediate GPU upload. On Quest 2 WebXR, textures that have not been
-          // explicitly uploaded can render as black on the first frame they appear,
-          // even when needsUpdate=true, because the XR compositor uploads on its own
-          // schedule. initTexture() bypasses that and makes the upload synchronous.
+          // renderer.initTexture() is deliberately NOT called — see applyTex() below.
           const applyDestTex = (destSrc) => {
             const fMesh = folio.getObject3D('mesh');
             if (!fMesh || !fMesh.material) return;
@@ -968,13 +975,13 @@
             const applyTex = (tex) => {
               fMesh.material.map         = tex;
               fMesh.material.needsUpdate = true;
-              // Force immediate GPU upload — critical on Quest 2 WebXR.
-              if (renderer && renderer.initTexture) renderer.initTexture(tex);
-              // Hypothesis 5 fix: re-assert layer 2 every time we write a texture.
-              // If A-Frame rebuilt the folio mesh (e.g. after a setAttribute on the
-              // material or scale), the new mesh defaults to layer 0 and the layer 2
-              // assignment from scene 'loaded' is lost.  The camera has layer 2
-              // enabled so this has no visual cost — it is purely a guard.
+              // NOTE: renderer.initTexture() is deliberately NOT called here.
+              // Calling it outside an active XR frame on Quest 2 produces
+              // CONTEXT_LOST_WEBGL (Adreno GPU rejects gl.texImage2D outside
+              // the compositor frame). Three.js uploads lazily on first render.
+              // Re-assert layer 2 in case A-Frame rebuilt the folio mesh
+              // (e.g. after setAttribute on material or scale), which would
+              // reset the mesh to layer 0 and make it invisible to the camera.
               fMesh.layers.set(2);
             };
 
@@ -1233,6 +1240,18 @@
             }
             if (scene.camera) {
               scene.camera.layers.enable(2);    // camera renders both layer 0 and layer 2
+            }
+
+            // The desktop cursor raycaster uses THREE.Raycaster which only tests
+            // layer 0 by default. The folio mesh was just moved to layer 2, so
+            // mouseenter/mouseleave (used for the hover-tooltip) would only fire
+            // when the cursor hits a layer-0 child mesh (the page-corner planes),
+            // not the folio body. Enabling layer 2 on the cursor's THREE.Raycaster
+            // lets it intersect the folio mesh across the full surface.
+            const cursorEl = document.querySelector('#cursor');
+            if (cursorEl && cursorEl.components.raycaster &&
+                cursorEl.components.raycaster.raycaster) {
+              cursorEl.components.raycaster.raycaster.layers.enable(2);
             }
 
             // ── Audio panel element refs ──────────────────────────────────────────
@@ -1544,6 +1563,10 @@
           this.onMouseUp     = ()  => { this.ifMouseDown = false; };
           this.onMouseMove   = (e) => {
             if (!this.ifMouseDown) return;
+            // Lock folio rotation while a page curl is in progress.
+            // isCurling is true from startCurl until resetCurl completes.
+            const pageCurl = this.el.components['page-curl'];
+            if (pageCurl && pageCurl.isCurling) return;
             const rotation = this.el.getAttribute('rotation');
             const deltaX   = (e.movementX !== undefined ? e.movementX : 0) * 0.15;
             const deltaY   = (e.movementY !== undefined ? e.movementY : 0) * 0.15;
@@ -2096,7 +2119,14 @@
           const hoverTooltip = document.querySelector('#hover-tooltip');
           const cursor       = document.querySelector('#cursor');
 
-          this.el.addEventListener('enter-vr', () => cursor.setAttribute('visible', false));
+          this.el.addEventListener('enter-vr', () => {
+            cursor.setAttribute('visible', false);
+            // Hide the hover-tooltip on VR entry. If the desktop cursor was
+            // hovering over the folio when the user clicked 'Enter VR',
+            // mouseleave never fires (cursor is hidden synchronously), so
+            // the tooltip would otherwise persist as a floating label in VR.
+            hoverTooltip.setAttribute('visible', 'false');
+          });
           this.el.addEventListener('exit-vr',  () => cursor.setAttribute('visible', true));
 
           let zoomed          = false;
@@ -2246,61 +2276,56 @@
             if (soundEl.components.sound) soundEl.components.sound.playSound();
             soundUiEl.setAttribute('visible', 'false');
 
-            if (this.el.is('vr-mode')) {
-              // ── Lectern lift sequence (VR only) ──────────────────────────────
-              // Three simultaneous animations on the folio transform, then a
-              // staggered reveal of the UI panels once the folio has settled.
-              //
-              // 1. zoom-anchor rises from resting (y=1.35, z=−2.2) to interaction
-              //    position (y=1.55, z=−2.0), floating slightly forward off the lectern.
-              //    Uses animation__lift (named) so the zoom button's animation__zoom
-              //    tween on the same entity never cancels this one.
-              // 2. folio-object rotation straightens from −20° resting lean to 0°.
-              // 3. folio-object scale grows from 0.7 to 1.0.
+            // ── Lectern lift sequence (desktop + VR) ───────────────────────────
+            // Three simultaneous animations on the folio transform, then a
+            // staggered reveal of the UI panels once the folio has settled.
+            //
+            // 1. zoom-anchor rises from resting (y=1.35, z=−2.2) to interaction
+            //    position (y=1.55, z=−2.0), floating slightly forward off the lectern.
+            //    Uses animation__lift (named) so the zoom button's animation__zoom
+            //    tween on the same entity never cancels this one.
+            // 2. folio-object rotation straightens from −20° resting lean to 0°.
+            // 3. folio-object scale grows from 0.7 to 1.0.
 
-              const LIFT_DUR  = 1200;
-              const SCALE_DUR = 1000;
-              const TILT_DUR  = 1000;
-              const EASE      = 'easeInOutQuad';
+            const LIFT_DUR  = 1200;
+            const SCALE_DUR = 1000;
+            const TILT_DUR  = 1000;
+            const EASE      = 'easeInOutQuad';
 
-              zoomAnchor.setAttribute('animation__lift', {
-                property: 'position',
-                from: '0 1.35 -2.2',
-                to:   '0 1.55 -2.0',
-                dur: LIFT_DUR, easing: EASE
-              });
+            zoomAnchor.setAttribute('animation__lift', {
+              property: 'position',
+              from: '0 1.35 -2.2',
+              to:   '0 1.55 -2.0',
+              dur: LIFT_DUR, easing: EASE
+            });
 
-              folio.setAttribute('animation__tilt', {
-                property: 'rotation',
-                from: '-20 0 0',
-                to:   '0 0 0',
-                dur: TILT_DUR, easing: EASE
-              });
+            folio.setAttribute('animation__tilt', {
+              property: 'rotation',
+              from: '-20 0 0',
+              to:   '0 0 0',
+              dur: TILT_DUR, easing: EASE
+            });
 
-              folio.setAttribute('animation__scale', {
-                property: 'scale',
-                from: '0.7 0.7 0.7',
-                to:   '1 1 1',
-                dur: SCALE_DUR, easing: EASE
-              });
-            }
+            folio.setAttribute('animation__scale', {
+              property: 'scale',
+              from: '0.7 0.7 0.7',
+              to:   '1 1 1',
+              dur: SCALE_DUR, easing: EASE
+            });
 
-            // Reveal panels and buttons on both desktop and VR.
-            // In VR: staggered delays let the folio finish rising first.
-            // On desktop: folio is already in position so delay is 0.
-            const panelDelay  = this.el.is('vr-mode') ? 1000 : 0;
-            const buttonDelay = this.el.is('vr-mode') ? 1300 : 0;
-
+            // Reveal panels and buttons after the folio has finished rising.
+            // Delays are the same on desktop and VR — the lift animation runs
+            // on both platforms and takes the same time to complete.
             setTimeout(() => {
               document.querySelector('#translation-panel').setAttribute('visible', true);
               document.querySelector('#transcription-panel').setAttribute('visible', true);
               document.querySelector('#info-right-panel').setAttribute('visible', true);
-            }, panelDelay);
+            }, 1000);
 
             setTimeout(() => {
               document.querySelector('#button-group').setAttribute('visible', true);
               infoPanel.setAttribute('visible', true);
-            }, buttonDelay);
+            }, 1300);
           };
 
           // Desktop trigger — fires on any click, but only when NOT in VR.
