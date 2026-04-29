@@ -925,6 +925,16 @@
             // High-intensity commit pulse synchronised with the page-turn audio — both
             // land on the same frame so the tactile and auditory cues reinforce each other.
             pulseHaptic(capturedCtrl, 0.8, 60);
+            // Reset the watchdog from the point of release, not from startCurl.
+            // The startCurl watchdog fires 1200 ms after the drag begins. If the
+            // user drags for more than ~750 ms, the watchdog can fire mid-animation
+            // (during the 450 ms completion sweep), calling resetCurl() and
+            // aborting the swap. Resetting here gives exactly 700 ms from the
+            // moment _completeCurl is called — safely beyond the 450 ms animation
+            // on both desktop and Quest 2 VR.
+            clearTimeout(this._watchdog);
+            this._watchdog = setTimeout(
+              () => { if (this.isCurling) this.resetCurl(); }, 700);
             const startProg    = this.peelProgress;
             const capturedSide = this.curlSide;
             const startTime    = performance.now();
@@ -983,6 +993,13 @@
             setTimeout(() => pulseHaptic(capturedCtrl, 0.20, 12),  45);
             setTimeout(() => pulseHaptic(capturedCtrl, 0.15, 10),  90);
             setTimeout(() => pulseHaptic(capturedCtrl, 0.10,  8), 135);
+            // Reset the watchdog from the point of release for the same reason
+            // as _completeCurl: the startCurl watchdog can fire mid-animation
+            // if the drag lasted more than ~850 ms. 600 ms gives safe margin
+            // beyond the 350 ms snap-back animation on both platforms.
+            clearTimeout(this._watchdog);
+            this._watchdog = setTimeout(
+              () => { if (this.isCurling) this.resetCurl(); }, 600);
             const startProg    = this.peelProgress;
             const capturedSide = this.curlSide;
             const startTime    = performance.now();
