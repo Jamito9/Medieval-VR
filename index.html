@@ -2222,7 +2222,7 @@
 
             zoomAnchor.setAttribute('animation__lift', {
               property: 'position',
-              from: '0 1.35 -2.2',
+              from: '0 1.45 -2.2',
               to:   '0 1.55 -2.0',
               dur: LIFT_DUR, easing: EASE
             });
@@ -2508,14 +2508,14 @@
       </a-gltf-model>
 
       <!-- ── Folio anchor — resting state ──────────────────────────────────
-           zoom-anchor y=1.15 z=−2.2 places the folio above the lectern reading
-           surface at the new position.  On startAudio it lifts to y=1.4, z=−2.0.
+           zoom-anchor y=1.45 z=−2.2 places the folio above the lectern reading
+           surface. On startAudio it lifts to y=1.55, z=−2.0.
            folio-object starts at scale 0.7 and rotation −20° on X (leaning
            back on the sloped lectern surface), then animates to scale 1,
            rotation 0 when the experience begins.
            button-group and info-panel start hidden; they reveal after the lift.
       -->
-      <a-entity id="zoom-anchor" position="0 1.35 -2.2">
+      <a-entity id="zoom-anchor" position="0 1.45 -2.2">
 
           <a-plane id="folio-object" class="clickable"
                    drag-rotate vr-grab-rotate page-curl folio-hotspots
@@ -2534,7 +2534,7 @@
           </a-plane>
 
           <!-- Hidden until folio lift animation completes -->
-          <a-entity id="button-group" position="0.9 0 0.1" rotation="0 -25 0" visible="false">
+          <a-entity id="button-group" position="0.75 0 0.1" rotation="0 -25 0" visible="false">
               <a-sphere id="zoom-button"  class="clickable" haptic-button position="0 0.25 0"  radius="0.04" color="#FFD700"><a-text value="ZOOM/RESET" position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
               <a-sphere id="mat-button"   class="clickable" haptic-button position="0 0.12 0"  radius="0.04" color="#C0C0C0"><a-text value="MATERIAL"   position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
               <a-sphere id="swap-button"  class="clickable" haptic-button position="0 0 0"     radius="0.04" color="#cd7f32"><a-text value="SWAP PAGE"  position="0.07 0 0" scale="0.22 0.22 0.22" color="white"></a-text></a-sphere>
